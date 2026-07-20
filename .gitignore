@@ -34,6 +34,10 @@ ENV/
 env.bak/
 venv.bak/
 
+# Kubernetes credentials
+*kubeconfig.yaml
+
+
 # IDEs and editors
 .idea/
 .vscode/
