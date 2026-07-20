@@ -12,7 +12,7 @@ from neo4j import GraphDatabase
 
 NEO4J_URI = "bolt://localhost:7687"
 NEO4J_USER = "neo4j"
-NEO4J_PASSWORD = "password123"
+NEO4J_PASSWORD = "neo4jpassword"
 
 # ==========================================
 # 1. 53대 기업 반도체 테마 및 기술군 데이터 정의
@@ -86,12 +86,12 @@ STOCKS = [
     {"id": "S_TSE", "name": "티에스이", "ticker": "131290", "capSize": "Small", "role": "R_TEST_PART"},
     {"id": "S_MCT", "name": "마이크로컨텍솔", "ticker": "098120", "capSize": "Small", "role": "R_TEST_PART"},
     {"id": "S_OKS", "name": "오킨스전자", "ticker": "080580", "capSize": "Small", "role": "R_TEST_PART"},
-    {"id": "S_TGE", "name": "타이거일렉", "ticker": "227630", "capSize": "Small", "role": "R_TEST_PART"},
+    {"id": "S_TGE", "name": "타이거일렉", "ticker": "219130", "capSize": "Small", "role": "R_TEST_PART"},
 
     # 8. R_EUV (4)
     {"id": "S_FST", "name": "에프에스티", "ticker": "036810", "capSize": "Small", "role": "R_EUV"},
     {"id": "S_SST", "name": "에스앤에스텍", "ticker": "101490", "capSize": "Small", "role": "R_EUV"},
-    {"id": "S_HPS", "name": "HPSP", "ticker": "403380", "capSize": "Mid", "role": "R_EUV"},
+    {"id": "S_HPS", "name": "HPSP", "ticker": "403870", "capSize": "Mid", "role": "R_EUV"},
     {"id": "S_PSI", "name": "파크시스템스", "ticker": "140860", "capSize": "Small", "role": "R_EUV"},
 
     # 9. R_SUBSTRATE (4)
@@ -106,7 +106,7 @@ STOCKS = [
     {"id": "S_WNM", "name": "원익머트리얼즈", "ticker": "104830", "capSize": "Small", "role": "R_MATERIAL"},
     {"id": "S_HNM", "name": "하나머티리얼즈", "ticker": "166090", "capSize": "Small", "role": "R_MATERIAL"},
     {"id": "S_WDX", "name": "월덱스", "ticker": "101160", "capSize": "Small", "role": "R_MATERIAL"},
-    {"id": "S_TCK", "name": "티씨케이", "ticker": "064540", "capSize": "Small", "role": "R_MATERIAL"},
+    {"id": "S_TCK", "name": "티씨케이", "ticker": "064760", "capSize": "Small", "role": "R_MATERIAL"},
     {"id": "S_PSK", "name": "피에스케이", "ticker": "319660", "capSize": "Small", "role": "R_MATERIAL"}
 ]
 
@@ -257,7 +257,7 @@ class OntologyInitializer:
             r.verifiedBy = "System_Initializer",
             r.verifiedAt = datetime()
         """
-        tx.run(query, relations=relations
+        tx.run(query, relations=relations)
 
 # ==========================================
 # 3. 메인 실행 엔트리포인트
