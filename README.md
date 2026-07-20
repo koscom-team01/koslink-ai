@@ -77,24 +77,25 @@ FastAPI 라우터를 타고 들어온 질문이 LangChain 오케스트레이터�
 
 ```mermaid
 graph TD
-    User([사용자 / 클라이언트]) -->|뉴스 텍스트 또는 질문 입력| API[FastAPI API Router]
+    User(["사용자 / 클라이언트"]) -->|뉴스 텍스트 또는 질문 입력| API["FastAPI API Router"]
     
-    subgraph FastAPI_AI_Server [FastAPI AI Server (LangChain)]
-        API -->|컨텍스트 전달| Orchestrator[LangChain Orchestrator]
+    subgraph FastAPI_AI_Server ["FastAPI AI Server (LangChain)"]
+        API -->|컨텍스트 전달| Orchestrator["LangChain Orchestrator"]
         
-        Orchestrator -->|Phase 1: 팩트 추출| GraphChain[GraphRAG Chain]
-        Orchestrator -->|Phase 2: 시황/감성 검색| VectorChain[Vector RAG Chain]
+        Orchestrator -->|Phase 1: 팩트 추출| GraphChain["GraphRAG Chain"]
+        Orchestrator -->|Phase 2: 시황/감성 검색| VectorChain["Vector RAG Chain"]
         
-        GraphChain <-->|Port 7687| Neo4j[(Neo4j Graph DB)]
-        VectorChain <-->|Port 5432| Postgres[(PostgreSQL pgvector)]
+        GraphChain <-->|Port 7687| Neo4j["Neo4j Graph DB"]
+        VectorChain <-->|Port 5432| Postgres["PostgreSQL pgvector"]
         
-        GraphChain -->|관련 수혜주 리스트 & 공시 팩트| Synthesis[LLM Synthesis & Predictor]
+        GraphChain -->|관련 수혜주 리스트 & 공시 팩트| Synthesis["LLM Synthesis & Predictor"]
         VectorChain -->|최신 뉴스 요약 & 리포트 감성| Synthesis
     end
     
     Synthesis -->|종합 보고서 JSON| API
     API -->|최종 응답 반환| User
 ```
+
 
 ---
 
