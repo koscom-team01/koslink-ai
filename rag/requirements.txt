@@ -1,0 +1,25 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic-settings>=2.4.0
+
+# LangChain / LLM
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-anthropic>=0.2.0
+langchain-postgres>=0.0.12
+langchain-community>=0.3.0
+
+# PostgreSQL / pgvector
+sqlalchemy[asyncio]>=2.0.30
+asyncpg>=0.29.0
+psycopg[binary]>=3.1.19
+pgvector>=0.3.2
+alembic>=1.13.2
+
+# 온톨로지(Neo4j) 연동
+neo4j>=5.0.0
+
+# 임베딩 (kure, bge-m3 공통 sentence-transformers 백엔드)
+sentence-transformers>=3.0.1
+
+python-dotenv>=1.0.1
