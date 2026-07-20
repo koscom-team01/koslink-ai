@@ -94,3 +94,15 @@ README 4장의 하이브리드 체인 예시(`GraphChain` + `VectorChain` → `S
 ## 5. 개발 환경 및 배포
 
 - 개발 환경: 담당자 A(Windows), 담당자 B(Mac) — 각자 로컬에서 `connect_db.sh`로 DB 터널을 열고 개발
+
+---
+
+## 6. 🔗 DART Open API 공용 클라이언트 (`shared/dart_client`)
+
+온톨로지팀이 사업보고서/공시 수집용으로 만든 DART Open API 클라이언트가
+`shared/dart_client`에 있다. `rag/requirements.txt`에 이미 `-e ../shared`로
+설치되도록 잡혀있어서, `.env`에 `DART_API_KEY`만 채우면 바로 import해서 쓸 수
+있다. 뉴스·공시 본문을 pgvector에 적재하는 `ingestion_service.py` 등에서
+DART 원문이 필요할 때 새로 구현하지 말고 이걸 재사용할 것.
+
+메서드 목록과 사용 예시는 [shared/README.md](../shared/README.md) 참고.
