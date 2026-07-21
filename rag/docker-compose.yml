@@ -1,0 +1,32 @@
+services:
+  embedding-server:
+    build: ./embedding_server
+    ports:
+      - "7997:7997"
+    volumes:
+      - embedding_model_cache:/app/.cache
+
+  langflow:
+    image: langflowai/langflow:latest
+    ports:
+      - "7860:7860"
+    environment:
+      # 로컬 개발 전용 기본 계정. 배포 시에는 반드시 별도 값으로 교체
+      - LANGFLOW_SUPERUSER=admin
+      - LANGFLOW_SUPERUSER_PASSWORD=admin1234
+      - LANGFLOW_COMPONENTS_PATH=/app/custom_components
+      # 기본 DB 경로(/app/.venv/.../site-packages/langflow/langflow.db)는 컨테이너 재생성 시
+      # 초기화되는 경로라, 마운트된 볼륨(langflow_data) 안으로 명시적으로 재지정
+      - LANGFLOW_DATABASE_URL=sqlite:////app/langflow/langflow.db
+      # KURE-v1는 API 키를 검증하지 않음 -> 더미 값
+      - OPENAI_API_KEY=sk-local-dummy
+    volumes:
+      - langflow_data:/app/langflow
+      - ./langflow/components:/app/custom_components
+      - ./langflow/flows:/app/flows
+    depends_on:
+      - embedding-server
+
+volumes:
+  embedding_model_cache:
+  langflow_data:
