@@ -128,7 +128,19 @@ README 4장의 하이브리드 체인 예시(`GraphChain` + `VectorChain` → `S
 
 ---
 
-## 6. API 처리 흐름 (`POST /api/v1/news/{news_id}/analyze`)
+## 6. 🔗 DART Open API 공용 클라이언트 (`shared/dart_client`)
+
+온톨로지팀이 사업보고서/공시 수집용으로 만든 DART Open API 클라이언트가
+`shared/dart_client`에 있다. `rag/requirements.txt`에 이미 `-e ../shared`로
+설치되도록 잡혀있어서, `.env`에 `DART_API_KEY`만 채우면 바로 import해서 쓸 수
+있다. 뉴스·공시 본문을 pgvector에 적재하는 `ingestion_service.py` 등에서
+DART 원문이 필요할 때 새로 구현하지 말고 이걸 재사용할 것.
+
+메서드 목록과 사용 예시는 [shared/README.md](../shared/README.md) 참고.
+
+---
+
+## 7. API 처리 흐름 (`POST /api/v1/news/{news_id}/analyze`)
 
 라우터(`api/routers/query.py`)는 입출력만 담당하고, 실제 오케스트레이션은 `services/retrieval_service.py`, LLM 종합은 `core/chains/qa_chain.py`가 맡습니다.
 
@@ -168,9 +180,7 @@ README 4장의 하이브리드 체인 예시(`GraphChain` + `VectorChain` → `S
 ```json
 {
   "news_summary": "string",
-  "key_companies": [
-    { "ticker": "string", "name": "string" }
-  ],
+  "key_companies": [{ "ticker": "string", "name": "string" }],
   "derived_companies": [
     {
       "ticker": "string",
@@ -192,7 +202,7 @@ README 4장의 하이브리드 체인 예시(`GraphChain` + `VectorChain` → `S
 
 ---
 
-## 7. 임베딩 파이프라인 (전처리 → 청킹 → 임베딩)
+## 8. 임베딩 파이프라인 (전처리 → 청킹 → 임베딩)
 
 **기본 (MVP 범위)**
 
@@ -214,7 +224,7 @@ README 4장의 하이브리드 체인 예시(`GraphChain` + `VectorChain` → `S
 
 ---
 
-## 8. 데이터 저장 스키마 (PostgreSQL + pgvector)
+## 9. 데이터 저장 스키마 (PostgreSQL + pgvector)
 
 컬럼 단위 전체 설계(타입, PK/FK 등)는 [rag_db_schema.md](./rag_db_schema.md)에 별도로 정리했습니다. 여기서는 테이블 구성만 요약합니다.
 
@@ -227,15 +237,15 @@ README 4장의 하이브리드 체인 예시(`GraphChain` + `VectorChain` → `S
 
 ---
 
-## 9. 개발 일정 및 역할 분담 (MVP: 2026-07-21(화) ~ 2026-07-24(금))
+## 10. 개발 일정 및 역할 분담 (MVP: 2026-07-21(화) ~ 2026-07-24(금))
 
 담당자 A(Windows) = 데이터·임베딩 파이프라인, 담당자 B(Mac) = API·LangChain. 매일 하루 끝에 5~10분 짧은 동기화 권장.
 
-| 날짜    | 담당자 A (데이터·임베딩)                                                                                                                                                     | 담당자 B (API·체인)                                                                                                                                          | 체크포인트                                                                                          |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| 화 7/21 | `core/embeddings/*` 구현, `vectordb/` 부트스트랩(pgvector extension, `companies`/`disclosures`/`news_corpus` 테이블), 대상 기업 시드 데이터 입력                          | `schemas/*` Pydantic 모델, `repositories/news_repository.py`(⚠ 백엔드 news 테이블 컬럼 확인 필요), `repositories/ontology_client.py` 스텁, `repositories/response_repository.py` 스텁(`ai_responses` 저장용) | 임베딩 provider 단독 실행 확인, news_repository로 뉴스 1건 조회 성공                                  |
-| 수 7/22 | `utils/text_splitter.py`, `services/ingestion_service.py`(공시 + 과거 뉴스 백필 모두 지원), `scripts/preload_corpus.py`로 실제 공시/과거 뉴스 몇 건 적재, `repositories/vector_repository.py`, `rag_ingestion_log` 연동 | `core/llm/claude.py`, `core/chains/qa_chain.py` 프롬프트+JSON 파서, `services/retrieval_service.py` 뼈대(벡터 검색은 mock)                                   | `vector_repository.similarity_search()`가 공시+과거 뉴스 모두에서 실제 pgvector 결과 반환 확인       |
-| 목 7/23 | 적재 데이터 추가 보강, `ingestion_service`에 실시간 뉴스 사후 임베딩 경로 추가, 버그 픽스 지원                                                                             | `api/routers/query.py` + `api/deps.py`로 전체 조립(mock 제거), 응답을 `ai_responses`에 저장, 응답 생성 후 사후 임베딩 연결                                     | `/api/v1/news/{news_id}/analyze` end-to-end 1회 성공 — 응답 저장 + 해당 뉴스가 벡터DB에도 새로 임베딩됨 |
-| 금 7/24 | 데이터 품질 보완(부족한 기업 추가 적재)                                                                                                                                     | 에러 핸들링(404, 근거 없음 폴백, 임베딩 실패해도 응답엔 영향 없도록), 응답 포맷 다듬기                                                                        | 오후: 온톨로지 파트와 통합 테스트 + 데모 리허설(사후 임베딩까지 포함한 시나리오 검증)                 |
+| 날짜    | 담당자 A (데이터·임베딩)                                                                                                                                                                                                | 담당자 B (API·체인)                                                                                                                                                                                          | 체크포인트                                                                                              |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| 화 7/21 | `core/embeddings/*` 구현, `vectordb/` 부트스트랩(pgvector extension, `companies`/`disclosures`/`news_corpus` 테이블), 대상 기업 시드 데이터 입력                                                                        | `schemas/*` Pydantic 모델, `repositories/news_repository.py`(⚠ 백엔드 news 테이블 컬럼 확인 필요), `repositories/ontology_client.py` 스텁, `repositories/response_repository.py` 스텁(`ai_responses` 저장용) | 임베딩 provider 단독 실행 확인, news_repository로 뉴스 1건 조회 성공                                    |
+| 수 7/22 | `utils/text_splitter.py`, `services/ingestion_service.py`(공시 + 과거 뉴스 백필 모두 지원), `scripts/preload_corpus.py`로 실제 공시/과거 뉴스 몇 건 적재, `repositories/vector_repository.py`, `rag_ingestion_log` 연동 | `core/llm/claude.py`, `core/chains/qa_chain.py` 프롬프트+JSON 파서, `services/retrieval_service.py` 뼈대(벡터 검색은 mock)                                                                                   | `vector_repository.similarity_search()`가 공시+과거 뉴스 모두에서 실제 pgvector 결과 반환 확인          |
+| 목 7/23 | 적재 데이터 추가 보강, `ingestion_service`에 실시간 뉴스 사후 임베딩 경로 추가, 버그 픽스 지원                                                                                                                          | `api/routers/query.py` + `api/deps.py`로 전체 조립(mock 제거), 응답을 `ai_responses`에 저장, 응답 생성 후 사후 임베딩 연결                                                                                   | `/api/v1/news/{news_id}/analyze` end-to-end 1회 성공 — 응답 저장 + 해당 뉴스가 벡터DB에도 새로 임베딩됨 |
+| 금 7/24 | 데이터 품질 보완(부족한 기업 추가 적재)                                                                                                                                                                                 | 에러 핸들링(404, 근거 없음 폴백, 임베딩 실패해도 응답엔 영향 없도록), 응답 포맷 다듬기                                                                                                                       | 오후: 온톨로지 파트와 통합 테스트 + 데모 리허설(사후 임베딩까지 포함한 시나리오 검증)                   |
 
 > 사후 임베딩을 "언제·어떻게" 트리거할지(동기/비동기, 실패 재시도 등)의 세부 오케스트레이션은 아직 미정 — 위 표는 이번 주 스코프에 포함한다는 결정만 반영한 것이고, 구체적 구현 방식은 진행하며 정합니다.

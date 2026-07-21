@@ -37,6 +37,9 @@ venv.bak/
 # Kubernetes credentials
 *kubeconfig.yaml
 
+# 재생성 가능한 로컬 캐시 (DART 원문 수집 결과, LLM 추출 후보 등)
+.cache/
+
 
 # IDEs and editors
 .idea/

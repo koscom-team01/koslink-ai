@@ -23,3 +23,6 @@ neo4j>=5.0.0
 sentence-transformers>=3.0.1
 
 python-dotenv>=1.0.1
+
+# DART Open API 공용 클라이언트 (ontology팀과 공유, shared/dart_client)
+-e ../shared
