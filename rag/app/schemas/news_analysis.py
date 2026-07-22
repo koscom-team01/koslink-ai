@@ -1,15 +1,12 @@
-"""kosLINK AI - 뉴스 분석 요청/응답 Pydantic 스키마.
+"""kosLINK AI - 뉴스 분석 응답 Pydantic 스키마.
 
-docs/rag_architecture.md 7장 응답 스키마를 그대로 매핑한다.
+docs/rag_architecture.md 7장 응답 스키마를 그대로 매핑한다. 요청은 body 없이
+POST /api/v1/news/{news_id}/analyze의 경로 파라미터만 쓰므로 별도 모델이 없다.
 """
 
 from typing import Literal
 
 from pydantic import BaseModel
-
-
-class NewsAnalysisRequest(BaseModel):
-    news_id: int
 
 
 class KeyCompany(BaseModel):
