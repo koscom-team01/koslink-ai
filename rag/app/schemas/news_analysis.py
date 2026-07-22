@@ -22,6 +22,7 @@ class EvidenceSource(BaseModel):
     title: str
     url: str
     published_date: str
+    excerpt: str
 
 
 class DerivedCompany(BaseModel):
