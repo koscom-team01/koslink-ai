@@ -9,7 +9,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 4. 실시간 파이프라인 수집 및 검증 스크립트 소스 복사
+COPY config.py .
 COPY initialize_ontology.py .
+COPY update_graph.py .
 COPY pipeline_updater.py .
 COPY test_api_extraction.py .
 
@@ -17,7 +19,8 @@ COPY test_api_extraction.py .
 ENV NEO4J_URI="bolt://localhost:7687" \
     NEO4J_USER="neo4j" \
     NEO4J_PASSWORD="password123" \
-    OPENAI_API_KEY=""
+    ANTHROPIC_API_KEY="" \
+    DART_API_KEY=""
 
 # 6. 쿠버네티스 Job 기동 시 기본 실행 파일 지정 (원샷 배치 기동)
 ENTRYPOINT ["python", "pipeline_updater.py"]

@@ -117,14 +117,11 @@ class DartOpenApiClient:
     # ------------------------------------------------------------------
     # 원본 문서 텍스트
     # ------------------------------------------------------------------
-    def get_business_report_text(self, rcept_no: str, max_chars: int = 20000) -> str:
-        """document.xml(ZIP)을 다운로드해 '사업의 개요' 본문 텍스트를 추출한다.
+    def _extract_zip_text(self, rcept_no: str) -> str:
+        """document.xml(ZIP)을 다운로드해 본문 텍스트를 이어붙여 반환한다.
 
-        ZIP 안에는 사업보고서 본문(`{rcept_no}.xml`) 외에 감사보고서 등 별도
+        ZIP 안에는 공시 본문(`{rcept_no}.xml`) 외에 감사보고서 등 별도
         첨부문서가 함께 들어있는 경우가 많아, 본문 파일만 골라서 사용한다.
-        본문 파일 앞부분은 목차라 "사업의 개요"가 최소 2번(목차 항목 + 실제
-        섹션 제목) 등장하는데, 관계·거래처 관련 서술은 실제 섹션(마지막 등장
-        위치)부터 시작하므로 그 지점부터 잘라낸다.
         """
         res = self._get("document.xml", rcept_no=rcept_no)
         zf = zipfile.ZipFile(io.BytesIO(res.content))
@@ -140,7 +137,16 @@ class DartOpenApiClient:
 
         full_text = "\n".join(chunks)
         lines = [line.strip() for line in full_text.splitlines() if line.strip()]
-        cleaned = "\n".join(lines)
+        return "\n".join(lines)
+
+    def get_business_report_text(self, rcept_no: str, max_chars: int = 20000) -> str:
+        """사업보고서 본문에서 '사업의 개요' 절만 잘라 반환한다.
+
+        본문 파일 앞부분은 목차라 "사업의 개요"가 최소 2번(목차 항목 + 실제
+        섹션 제목) 등장하는데, 관계·거래처 관련 서술은 실제 섹션(마지막 등장
+        위치)부터 시작하므로 그 지점부터 잘라낸다.
+        """
+        cleaned = self._extract_zip_text(rcept_no)
 
         marker = "사업의 개요"
         last_idx = cleaned.rfind(marker)
@@ -148,6 +154,13 @@ class DartOpenApiClient:
             cleaned = cleaned[last_idx:]
 
         return cleaned[:max_chars]
+
+    def get_disclosure_document_text(self, rcept_no: str, max_chars: int = 4000) -> str:
+        """단일판매·공급계약체결 등 일반 공시 본문 텍스트를 그대로 반환한다.
+
+        사업보고서와 달리 정형화된 절 구분이 없어 별도 절단 없이 앞부분만 자른다.
+        """
+        return self._extract_zip_text(rcept_no)[:max_chars]
 
     # ------------------------------------------------------------------
     # 타법인 출자현황 (구조화, LLM 불필요)
