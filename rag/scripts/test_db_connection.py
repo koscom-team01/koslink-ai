@@ -29,6 +29,7 @@ NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "neo4jpassword")
 
 def test_postgres() -> bool:
     import psycopg
+    from psycopg import sql
 
     # SQLAlchemy 스타일(postgresql+psycopg://) 접두어를 psycopg가 이해하는 형태로 변환
     dsn = PG_CONNECTION_STRING.replace("postgresql+psycopg://", "postgresql://")
@@ -47,6 +48,19 @@ def test_postgres() -> bool:
                     print("   pgvector 익스텐션 확인됨")
                 else:
                     print("   ⚠️ pgvector 익스텐션이 아직 설치되어 있지 않습니다 (vectordb/ 부트스트랩 필요).")
+
+                cur.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'public' ORDER BY table_name;"
+                )
+                tables = [r[0] for r in cur.fetchall()]
+                print(f"\n   RDBMS 테이블: {len(tables)}개")
+                for t in tables:
+                    cur.execute(
+                        sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(t))
+                    )
+                    count = cur.fetchone()[0]
+                    print(f"     - {t}: {count}행")
         return True
     except Exception as e:
         print(f"   ❌ 연결 실패: {e}")
