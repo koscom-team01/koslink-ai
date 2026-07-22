@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL_BGE_M3: str = "BAAI/bge-m3"
     EMBEDDING_DEVICE: str = "cpu"
 
-    VECTOR_COLLECTION_NAME: str = "market_news"
+    VECTOR_COLLECTION_NAME: str = "market_evidence"
 
     PORT: int = 8000
 
