@@ -145,53 +145,50 @@ def sync_all_market_caps():
 
     driver = None
     tickers_to_sync = {}
-
-    try:
-        driver = GraphDatabase.driver(settings.NEO4J_URI, auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD))
-        session = driver.session()
-
-        with session:
-            result = session.run("MATCH (s:Stock) RETURN s.ticker AS ticker, s.name AS name")
-            for record in result:
-                if record["ticker"]:
-                    tickers_to_sync[record["ticker"]] = record["name"]
-        print(f"  └ DB 조회 성공: 총 {len(tickers_to_sync)}개의 트래킹 티커 검출 완료.")
-
-    except Exception as e:
-        print(f"  ❌ Neo4j 데이터베이스 연결 실패로 시총 업데이트를 생략합니다: {e}")
-        return
-
     updated = 0
     now_str = str(datetime.now())
     today_str = date.today().strftime('%Y-%m-%d')
 
-    with session:
-        for ticker, name_in_db in tickers_to_sync.items():
-            name, cap = fetch_naver_finance_market_cap(ticker)
-            if cap == 0:
-                continue
+    try:
+        driver = GraphDatabase.driver(settings.NEO4J_URI, auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD))
 
-            if cap >= 10_000_000_000_000:
-                cap_size = "Large"
-            elif cap >= 1_000_000_000_000:
-                cap_size = "Mid"
-            else:
-                cap_size = "Small"
+        with driver.session() as session:
+            result = session.run("MATCH (s:Stock) RETURN s.ticker AS ticker, s.name AS name")
+            for record in result:
+                if record["ticker"]:
+                    tickers_to_sync[record["ticker"]] = record["name"]
+            print(f"  └ DB 조회 성공: 총 {len(tickers_to_sync)}개의 트래킹 티커 검출 완료.")
 
-            query = """
-            MATCH (s:Stock {ticker: $ticker})
-            SET s.marketCap = $cap,
-                s.capSize = $cap_size,
-                s.baseDate = $baseDate,
-                s.sourceAPI = "NaverFinance_Scraper",
-                s.lastUpdated = $now
-            RETURN s.name, s.capSize
-            """
-            res = session.run(query, ticker=ticker, cap=cap, cap_size=cap_size, baseDate=today_str, now=now_str)
-            record = res.single()
-            if record:
-                print(f"  └ [DB 업데이트 성공] {record[0]} ({ticker}) ➔ {record[1]} (시총: {cap:,}원)")
-                updated += 1
+            for ticker, _name_in_db in tickers_to_sync.items():
+                _name, cap = fetch_naver_finance_market_cap(ticker)
+                if cap == 0:
+                    continue
+
+                if cap >= 10_000_000_000_000:
+                    cap_size = "Large"
+                elif cap >= 1_000_000_000_000:
+                    cap_size = "Mid"
+                else:
+                    cap_size = "Small"
+
+                query = """
+                MATCH (s:Stock {ticker: $ticker})
+                SET s.marketCap = $cap,
+                    s.capSize = $cap_size,
+                    s.baseDate = $baseDate,
+                    s.sourceAPI = "NaverFinance_Scraper",
+                    s.lastUpdated = $now
+                RETURN s.name, s.capSize
+                """
+                res = session.run(query, ticker=ticker, cap=cap, cap_size=cap_size, baseDate=today_str, now=now_str)
+                record = res.single()
+                if record:
+                    print(f"  └ [DB 업데이트 성공] {record[0]} ({ticker}) ➔ {record[1]} (시총: {cap:,}원)")
+                    updated += 1
+
+    except Exception as e:
+        print(f"  ❌ Neo4j 데이터베이스 연결 실패로 시총 업데이트를 생략합니다: {e}")
+        return
 
     print(f"✅ 총 {updated}개 상장사 시가총액 동기화 완료.")
     if driver:
@@ -235,7 +232,7 @@ def sync_new_supply_contracts():
     51개사 유니버스를 순회하며 최근 공급계약체결 공시를 찾아 SUPPLY_TO 그래프에 반영한다.
     이미 반영된 공시(dartUrl 기준)는 LLM을 재호출하지 않고 건너뛴다.
     """
-    print(f"\n🔄 [태스크 2] Open DART API 신규 공급계약체결 공시 조회 및 반영 가동...")
+    print("\n🔄 [태스크 2] Open DART API 신규 공급계약체결 공시 조회 및 반영 가동...")
 
     try:
         dart = DartOpenApiClient()
