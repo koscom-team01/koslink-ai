@@ -19,9 +19,9 @@ class Settings(BaseSettings):
     NEO4J_USER: str = "neo4j"
     NEO4J_PASSWORD: str = "neo4jpassword"
 
-    # Claude API
-    ANTHROPIC_API_KEY: str = ""
-    ANTHROPIC_MODEL: str = "claude-sonnet-4-5"
+    # OpenAI API
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o-mini"
 
     # 임베딩: kure | bge_m3
     EMBEDDING_PROVIDER: str = "kure"
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL_BGE_M3: str = "BAAI/bge-m3"
     EMBEDDING_DEVICE: str = "cpu"
 
-    VECTOR_COLLECTION_NAME: str = "market_news"
+    VECTOR_COLLECTION_NAME: str = "market_evidence"
 
     PORT: int = 8000
 
