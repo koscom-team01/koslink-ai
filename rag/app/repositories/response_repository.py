@@ -40,3 +40,18 @@ class ResponseRepository:
             },
         )
         await self._session.commit()
+
+    async def save_failure(self, news_id: int, error_message: str) -> None:
+        await self._session.execute(
+            text(
+                """
+                INSERT INTO ai_responses (news_id, status, error_message)
+                VALUES (:news_id, 'failed', :error_message)
+                ON CONFLICT (news_id) DO UPDATE SET
+                    status = 'failed',
+                    error_message = EXCLUDED.error_message
+                """
+            ),
+            {"news_id": news_id, "error_message": error_message},
+        )
+        await self._session.commit()

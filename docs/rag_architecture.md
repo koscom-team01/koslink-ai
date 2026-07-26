@@ -17,12 +17,15 @@
 
 ```
 [백엔드] 1분마다 최신 뉴스 폴링
-    → 뉴스 원문을 백엔드 DB에 저장
-    → AI 서버 호출 (POST /api/v1/news/{news_id}/analyze)
+    → 뉴스 원문을 백엔드 DB(news 테이블, status='pending')에 저장
+    → AI 서버 호출 (POST /api/v1/news/analyze-pending) - news_id 없이 트리거만
 
 [AI 서버 = 온톨로지 + RAG]
+    → news.status='pending'인 뉴스를 직접 조회해 'analyzing'으로 선점 후 일괄 처리
+      (news_repository.claim_pending, FOR UPDATE SKIP LOCKED로 중복 처리 방지)
     → 뉴스 요약, 주요 기업, 연관/파생 기업, 판단 근거(파급경로+과거 이벤트) 구성
-    → 이 응답을 AI 서버가 직접 DB에 저장 (동기 반환뿐 아니라 저장까지 AI 서버 책임)
+    → 이 응답을 AI 서버가 직접 DB에 저장하고 news.status를 done/failed로 갱신
+      (한 건 실패해도 나머지 뉴스는 계속 처리)
     → 저장 완료 후, 같은 뉴스를 온톨로지·RAG가 각각 사후 학습/임베딩
       (다음 뉴스 분석 때 "과거 이벤트" 근거로 쓰이도록 코퍼스에 편입)
 
@@ -143,20 +146,23 @@ DART 원문이 필요할 때 새로 구현하지 말고 이걸 재사용할 것.
 
 ---
 
-## 7. API 처리 흐름 (`POST /api/v1/news/{news_id}/analyze`)
+## 7. API 처리 흐름 (`POST /api/v1/news/analyze-pending`)
 
-라우터(`api/routers/query.py`)는 입출력만 담당하고, 실제 오케스트레이션은 `services/retrieval_service.py`, LLM 종합은 `core/chains/qa_chain.py`가 맡습니다.
+라우터(`api/routers/news.py`)는 입출력만 담당하고, 실제 오케스트레이션은 `services/retrieval_service.py`, LLM 종합은 `core/chains/qa_chain.py`가 맡습니다. 요청은 `limit` 쿼리 파라미터만 받고 news_id는 받지 않습니다 - 어떤 뉴스를 처리할지는 AI 서버가 직접 정합니다.
 
 ```
-[1] 뉴스 조회
-    news_repository.get_by_id(news_id)
-    → title, body, published_at, url 확보. 없으면 404.
+[0] 미응답 뉴스 선점
+    news_repository.claim_pending(limit)
+    → news.status='pending'인 뉴스를 'analyzing'으로 선점하며 최대 limit건 반환.
+      선점된 각 뉴스마다 아래 [1]~[5]을 순서대로 실행하고, 한 건이 실패해도
+      로그만 남기고 다음 뉴스로 넘어감(news.status='failed' + ai_responses에
+      error_message 기록).
 
-[2] 온톨로지 조회 (Hard Fact)
+[1] 온톨로지 조회 (Hard Fact)
     ontology_client.find_related_companies(...)
     → Neo4j에서 관련 기업/공급망 관계 리스트. 실패 시 빈 리스트로 폴백.
 
-[3] 벡터 검색 (RAG 근거)
+[2] 벡터 검색 (RAG 근거)
     vector_repository.similarity_search(
         query=news.body,
         tickers=[c.ticker for c in related],
@@ -164,15 +170,15 @@ DART 원문이 필요할 때 새로 구현하지 말고 이걸 재사용할 것.
     )
     → 기업별 관련 공시/리포트 청크 top-k
 
-[4] 컨텍스트 조립
+[3] 컨텍스트 조립
     온톨로지 팩트 + 벡터 청크를 기업별로 그룹핑한 문자열로 정리
 
-[5] LLM 종합 (Claude)
+[4] LLM 종합 (Claude)
     qa_chain.invoke({graph_facts, vector_context, news_body})
     → JSON 강제 파싱: news_summary + relevant_stocks[]
 
-[6] 응답 조립
-    LLM 결과에 [3]에서 실제 검색된 청크의 url/title/published_date를
+[5] 응답 조립
+    LLM 결과에 [2]에서 실제 검색된 청크의 url/title/published_date를
     evidence_sources로 매칭해 붙임 (근거 없으면 "관련 근거 자료 없음" 폴백)
 ```
 

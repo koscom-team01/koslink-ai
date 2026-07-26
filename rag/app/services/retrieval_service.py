@@ -1,18 +1,23 @@
 """kosLINK AI - 뉴스 분석 오케스트레이션 서비스.
 
 흐름 (docs/rag_architecture.md 7장 "API 처리 흐름" 참고):
-    [1] 뉴스 조회             news_repository.get_by_id
-    [2] LLM 추출              qa_chain.extract_key_companies -> news_summary, key_companies
-    [3] 온톨로지 조회          _find_derived_candidates - 자리표시자, 항상 [] (온톨로지 파트 작업 전)
-    [4] RAG 근거 검색          _collect_evidence - vector_repository.find_mentions만 사용
+    [0] 미응답 뉴스 선점        news_repository.claim_pending - status='pending'인
+                              뉴스를 'analyzing'으로 선점해 배치로 가져옴
+    [1] LLM 추출              qa_chain.extract_key_companies -> news_summary, key_companies
+    [2] 온톨로지 조회          _find_derived_candidates - 자리표시자, 항상 [] (온톨로지 파트 작업 전)
+    [3] RAG 근거 검색          _collect_evidence - vector_repository.find_mentions만 사용
                               (similarity_search는 core/embeddings/* 없어서 아직 못 씀)
-    [5] LLM 종합              qa_chain.synthesize_derived_companies -> derived_companies
-    [6] 응답 조립              _to_evidence_sources로 vector_context를 매칭해 붙임
-    [7] 응답 저장              response_repository.save
-    [8] 사후 임베딩 트리거      _trigger_post_response_embedding - 자리표시자, no-op
+    [4] LLM 종합              qa_chain.synthesize_derived_companies -> derived_companies
+    [5] 응답 조립              _to_evidence_sources로 vector_context를 매칭해 붙임
+    [6] 응답 저장              response_repository.save + news_repository.mark_done
+    [7] 사후 임베딩 트리거      _trigger_post_response_embedding - 자리표시자, no-op
 
-[3]이 항상 빈 리스트라 [4][5]도 지금은 실질적으로 항상 빈 결과가 된다 - 온톨로지/
-임베딩 파트 작업이 끝나면 [3]만 실제 구현으로 교체하면 나머지는 그대로 동작한다.
+[2]가 항상 빈 리스트라 [3][4]도 지금은 실질적으로 항상 빈 결과가 된다 - 온톨로지/
+임베딩 파트 작업이 끝나면 [2]만 실제 구현으로 교체하면 나머지는 그대로 동작한다.
+
+배치 안에서 뉴스 1건이 실패해도(LLM 오류 등) 나머지 뉴스 처리는 계속 진행한다 -
+news_repository.mark_failed + response_repository.save_failure로 실패를 기록하고
+다음 뉴스로 넘어간다 (analyze_pending 참고).
 """
 
 import logging
@@ -27,17 +32,17 @@ from app.core.chains.qa_chain import (
 from app.repositories.news_repository import NewsRecord, NewsRepository
 from app.repositories.response_repository import ResponseRepository
 from app.repositories.vector_repository import VectorRepository
-from app.schemas.news_analysis import DerivedCompany, EvidenceSource, KeyCompany, NewsAnalysisResponse
+from app.schemas.news_analysis import (
+    DerivedCompany,
+    EvidenceSource,
+    KeyCompany,
+    NewsAnalysisResponse,
+    PendingAnalysisResult,
+)
 from app.services.ingestion_service import achunk_and_store, build_async_vector_store
 from app.utils.text_splitter import build_prefix
 
 logger = logging.getLogger(__name__)
-
-
-class NewsNotFoundError(Exception):
-    def __init__(self, news_id: int):
-        self.news_id = news_id
-        super().__init__(f"news_id={news_id}를 찾을 수 없습니다")
 
 
 class RetrievalService:
@@ -46,11 +51,25 @@ class RetrievalService:
         self._vector_repo = VectorRepository(session)
         self._response_repo = ResponseRepository(session)
 
-    async def analyze(self, news_id: int) -> NewsAnalysisResponse:
-        news = await self._news_repo.get_by_id(news_id)
-        if news is None:
-            raise NewsNotFoundError(news_id)
+    async def analyze_pending(self, limit: int) -> list[PendingAnalysisResult]:
+        pending = await self._news_repo.claim_pending(limit)
 
+        results = []
+        for news in pending:
+            try:
+                response = await self._analyze(news)
+                await self._response_repo.save(news.news_id, response)
+                await self._news_repo.mark_done(news.news_id)
+                await self._trigger_post_response_embedding(news)
+                results.append(PendingAnalysisResult(news_id=news.news_id, status="done"))
+            except Exception as e:
+                logger.exception("뉴스 분석 실패 - news_id=%s", news.news_id)
+                await self._response_repo.save_failure(news.news_id, str(e))
+                await self._news_repo.mark_failed(news.news_id)
+                results.append(PendingAnalysisResult(news_id=news.news_id, status="failed", error=str(e)))
+        return results
+
+    async def _analyze(self, news: NewsRecord) -> NewsAnalysisResponse:
         extraction = await extract_key_companies(news)
         derived_candidates = await self._find_derived_candidates(extraction.key_companies)
         vector_context = await self._collect_evidence(derived_candidates, extraction.key_companies)
@@ -75,9 +94,6 @@ class RetrievalService:
                 for d in llm_derived
             ],
         )
-
-        await self._response_repo.save(news_id, response)
-        await self._trigger_post_response_embedding(news)
 
         return response
 
