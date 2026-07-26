@@ -1,8 +1,15 @@
 services:
+  # EMBEDDING_PROVIDER=kure일 때만 쓰는 로컬 폴백 서버 (app/core/embeddings/kure.py가
+  # 호출). 해커톤 기본값은 EMBEDDING_PROVIDER=openai라 평소엔 기동할 필요 없음.
   embedding-server:
     build: ./embedding_server
     ports:
       - "7997:7997"
+    environment:
+      # 팬리스 맥북에서 장시간 배치 임베딩 시 전체 코어(8개)를 다 쓰면 발열이 커서
+      # 절반만 쓰도록 제한 (느려지지만 안전하게).
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
     volumes:
       - embedding_model_cache:/app/.cache
 
