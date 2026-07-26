@@ -28,6 +28,8 @@ from app.repositories.news_repository import NewsRecord, NewsRepository
 from app.repositories.response_repository import ResponseRepository
 from app.repositories.vector_repository import VectorRepository
 from app.schemas.news_analysis import DerivedCompany, EvidenceSource, KeyCompany, NewsAnalysisResponse
+from app.services.ingestion_service import achunk_and_store, build_async_vector_store
+from app.utils.text_splitter import build_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +111,25 @@ class RetrievalService:
             if c["ticker"] == ticker
         ]
 
-    @staticmethod
-    async def _trigger_post_response_embedding(news: NewsRecord) -> None:
-        # services/ingestion_service.py(임베딩 파트 작업)가 아직 없어서 no-op.
-        # 실패해도 분석 응답 자체엔 영향 없어야 하므로 예외를 던지지 않는다.
-        logger.info("사후 임베딩 미구현 - news_id=%s 건너뜀", news.news_id)
+    async def _trigger_post_response_embedding(self, news: NewsRecord) -> None:
+        """분석 응답 저장 후 같은 뉴스를 pgvector에 사후 임베딩 (rag_architecture.md 0장/8장).
+
+        실패해도 분석 응답 자체엔 영향 없어야 하므로 예외를 삼키고 로그만 남긴다 -
+        다음 폴링에서 재시도되는 게 아니라 이 뉴스는 영구히 근거 코퍼스에서 빠지게
+        되지만(rag_embedded_at이 NULL로 남음), 최소한 사용자에게 보여줄 분석 응답은
+        지켜야 한다는 우선순위다.
+        """
+        try:
+            prefix = build_prefix(news.title)
+            metadata = {
+                "ticker": None,
+                "source_type": "news",
+                "source_doc_id": str(news.news_id),
+                "title": news.title,
+                "url": news.url,
+                "published_date": str(news.published_at) if news.published_at else None,
+            }
+            await achunk_and_store([(prefix, news.body, metadata)], build_async_vector_store())
+            await self._news_repo.mark_embedded(news.news_id)
+        except Exception:
+            logger.exception("사후 임베딩 실패 - news_id=%s", news.news_id)
