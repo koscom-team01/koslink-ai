@@ -23,10 +23,14 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o-mini"
 
-    # 임베딩: kure | bge_m3
-    EMBEDDING_PROVIDER: str = "kure"
+    # 임베딩: openai | kure
+    # 해커톤 주최측이 OpenAI 키를 무상 제공해서 기본값을 openai로 둔다. kure는
+    # embedding_server/(로컬 Infinity 서버) 기동 시에만 쓰는 폴백 경로로 유지.
+    EMBEDDING_PROVIDER: str = "openai"
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-large"
     EMBEDDING_MODEL_KURE: str = "nlpai-lab/KURE-v1"
     EMBEDDING_MODEL_BGE_M3: str = "BAAI/bge-m3"
+    EMBEDDING_SERVER_URL: str = "http://localhost:7997"
     EMBEDDING_DEVICE: str = "cpu"
 
     VECTOR_COLLECTION_NAME: str = "market_evidence"
