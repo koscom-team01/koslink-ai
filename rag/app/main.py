@@ -24,9 +24,15 @@ app = FastAPI(title="kosLINK AI - RAG Server")
 app.include_router(news_router)
 
 
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {"status": "ok", "message": "kosLINK AI Server is running"}
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
 
 
 async def _serve() -> None:
