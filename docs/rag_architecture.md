@@ -17,14 +17,14 @@
 
 ```
 [백엔드] 1분마다 최신 뉴스 폴링
-    → 뉴스 원문을 백엔드 DB(news 테이블, status='pending')에 저장
+    → 뉴스 원문을 백엔드 DB(news 테이블, status='PENDING')에 저장
     → AI 서버 호출 (POST /api/v1/news/analyze-pending) - news_id 없이 트리거만
 
 [AI 서버 = 온톨로지 + RAG]
-    → news.status='pending'인 뉴스를 직접 조회해 'analyzing'으로 선점 후 일괄 처리
+    → news.status='PENDING'인 뉴스를 직접 조회해 'ANALYZING'으로 선점 후 일괄 처리
       (news_repository.claim_pending, FOR UPDATE SKIP LOCKED로 중복 처리 방지)
     → 뉴스 요약, 주요 기업, 연관/파생 기업, 판단 근거(파급경로+과거 이벤트) 구성
-    → 이 응답을 AI 서버가 직접 DB에 저장하고 news.status를 done/failed로 갱신
+    → 이 응답을 AI 서버가 직접 DB에 저장하고 news.status를 DONE/FAILED로 갱신
       (한 건 실패해도 나머지 뉴스는 계속 처리)
     → 저장 완료 후, 같은 뉴스를 온톨로지·RAG가 각각 사후 학습/임베딩
       (다음 뉴스 분석 때 "과거 이벤트" 근거로 쓰이도록 코퍼스에 편입)
@@ -153,33 +153,46 @@ DART 원문이 필요할 때 새로 구현하지 말고 이걸 재사용할 것.
 ```
 [0] 미응답 뉴스 선점
     news_repository.claim_pending(limit)
-    → news.status='pending'인 뉴스를 'analyzing'으로 선점하며 최대 limit건 반환.
+    → news.status='PENDING'인 뉴스를 'ANALYZING'으로 선점하며 최대 limit건 반환.
       선점된 각 뉴스마다 아래 [1]~[5]을 순서대로 실행하고, 한 건이 실패해도
-      로그만 남기고 다음 뉴스로 넘어감(news.status='failed' + ai_responses에
+      로그만 남기고 다음 뉴스로 넘어감(news.status='FAILED' + ai_responses에
       error_message 기록).
 
-[1] 온톨로지 조회 (Hard Fact)
-    ontology_client.find_related_companies(...)
-    → Neo4j에서 관련 기업/공급망 관계 리스트. 실패 시 빈 리스트로 폴백.
+[1] LLM 추출 (Claude)
+    qa_chain.extract_key_companies(news, companies)
+    → news_summary(3줄 배열) + origin_stocks(companies 유니버스 51개 안에서
+      뉴스의 핵심 기업 딱 1개만 추출, status(up/down)+reason까지 LLM이 채움).
+      origin_stocks가 비면(유니버스 밖 뉴스) 여기서 바로 종료 - [2]~[5]를
+      건너뛰고 news.status만 'DONE'으로 남기며 ai_responses 행은 만들지 않음
+      (retrieval_service._analyze가 None 반환 → analyze_pending이 save 생략).
 
-[2] 벡터 검색 (RAG 근거)
-    vector_repository.similarity_search(
-        query=news.body,
-        tickers=[c.ticker for c in related],
-        k=5,
-    )
-    → 기업별 관련 공시/리포트 청크 top-k
+[2] 온톨로지 조회 (Hard Fact)
+    origin_stocks의 ticker마다 ontology_client.find_related_companies(ticker) 호출
+    → Neo4j에서 2-hop 이내 OntologyExploreResult(related_stocks + graph)를 반환.
+      related_stocks: [{ticker, name, relation_label, relation_path}], graph:
+      {originId, nodes: [{id, name, ticker, marketType, capSize}], edges: [{id,
+      source, target, relation}]}. origin_stocks가 여럿이면 (ticker, name)/node id
+      기준으로 결과를 합침. Neo4j 조회 실패 시 빈 값으로 폴백.
 
-[3] 컨텍스트 조립
-    온톨로지 팩트 + 벡터 청크를 기업별로 그룹핑한 문자열로 정리
+[3] RAG 근거 검색
+    derived 후보 기업마다:
+      vector_repository.find_mentions(ticker, origin_stock명) → 키워드 직접 근거
+      vector_repository.similarity_search(ticker, news_summary) → 의미 유사도 근거
+    → 두 근거를 합쳐 기업별 관련 공시/과거뉴스 청크 목록 구성(LLM이 propagation을
+      쓸 때 내부 근거로만 씀 - 응답에는 노출하지 않음)
 
 [4] LLM 종합 (Claude)
-    qa_chain.invoke({graph_facts, vector_context, news_body})
-    → JSON 강제 파싱: news_summary + relevant_stocks[]
+    qa_chain.synthesize_related_stocks(news, origin_stocks, derived_candidates, evidence)
+    → 후보별 status(up/down)/propagation만 LLM이 채움 - ticker/name/relation_label/
+      relation_path는 온톨로지 하드 팩트를 그대로 씀. 온톨로지 후보가 하나도 없어도
+      final_summary는 항상 필요하므로 호출을 생략하지 않고 매번 실행.
 
 [5] 응답 조립
-    LLM 결과에 [2]에서 실제 검색된 청크의 url/title/published_date를
-    evidence_sources로 매칭해 붙임 (근거 없으면 "관련 근거 자료 없음" 폴백)
+    related_stocks는 [4] 결과(status/propagation)에 [2]의 derived_candidates
+    (ticker/name/relation_label/relation_path)를 합쳐서 만듦(관계 정보는 LLM이
+    합성하는 값이 아니라 하드 팩트라 신뢰하지 않음). source는 news 테이블 메타
+    정보를 그대로 옮겨 담고, graph는 온톨로지가 구성해 넘겨준 노드/엣지를 그대로
+    패싱(RAG는 조립하지 않음 - 온톨로지 연동 전까지는 빈 구조).
 ```
 
 ### 응답 스키마

@@ -35,7 +35,12 @@ class NewsRepository:
         await self._session.commit()
 
     async def claim_pending(self, limit: int) -> list[NewsRecord]:
-        """미응답(status='pending') 뉴스를 골라 'analyzing'으로 선점하며 반환한다.
+        """미응답(status='PENDING') 뉴스를 골라 'ANALYZING'으로 선점하며 반환한다.
+
+        status 값은 백엔드가 실제로 쓰는 대문자 표기('PENDING'/'ANALYZING'/
+        'DONE'/'FAILED')를 그대로 따른다 - DB에 CHECK 제약이 없어 대소문자가
+        강제되지 않으므로, docs 초안(소문자)이 아니라 실제 운영 데이터 기준으로
+        맞췄다.
 
         조회와 선점을 한 UPDATE...RETURNING으로 묶어야 한다 - 백엔드가 1분마다
         호출하는데 배치 처리가 1분을 넘기면 다음 호출과 겹칠 수 있어서, SELECT 후
@@ -46,10 +51,10 @@ class NewsRepository:
             text(
                 """
                 UPDATE news
-                SET status = 'analyzing'
+                SET status = 'ANALYZING'
                 WHERE news_id IN (
                     SELECT news_id FROM news
-                    WHERE status = 'pending'
+                    WHERE status = 'PENDING'
                     ORDER BY published_at
                     FOR UPDATE SKIP LOCKED
                     LIMIT :limit
@@ -65,14 +70,14 @@ class NewsRepository:
 
     async def mark_done(self, news_id: int) -> None:
         await self._session.execute(
-            text("UPDATE news SET status = 'done', analyzed_at = now() WHERE news_id = :news_id"),
+            text("UPDATE news SET status = 'DONE', analyzed_at = now() WHERE news_id = :news_id"),
             {"news_id": news_id},
         )
         await self._session.commit()
 
     async def mark_failed(self, news_id: int) -> None:
         await self._session.execute(
-            text("UPDATE news SET status = 'failed' WHERE news_id = :news_id"),
+            text("UPDATE news SET status = 'FAILED' WHERE news_id = :news_id"),
             {"news_id": news_id},
         )
         await self._session.commit()

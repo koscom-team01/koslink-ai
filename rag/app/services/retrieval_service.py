@@ -1,19 +1,31 @@
 """kosLINK AI - 뉴스 분석 오케스트레이션 서비스.
 
 흐름 (docs/rag_architecture.md 7장 "API 처리 흐름" 참고):
-    [0] 미응답 뉴스 선점        news_repository.claim_pending - status='pending'인
-                              뉴스를 'analyzing'으로 선점해 배치로 가져옴
-    [1] LLM 추출              qa_chain.extract_key_companies -> news_summary, key_companies
-    [2] 온톨로지 조회          _find_derived_candidates - 자리표시자, 항상 [] (온톨로지 파트 작업 전)
-    [3] RAG 근거 검색          _collect_evidence - vector_repository.find_mentions만 사용
-                              (similarity_search는 core/embeddings/* 없어서 아직 못 씀)
-    [4] LLM 종합              qa_chain.synthesize_derived_companies -> derived_companies
-    [5] 응답 조립              _to_evidence_sources로 vector_context를 매칭해 붙임
-    [6] 응답 저장              response_repository.save + news_repository.mark_done
-    [7] 사후 임베딩 트리거      _trigger_post_response_embedding - 자리표시자, no-op
-
-[2]가 항상 빈 리스트라 [3][4]도 지금은 실질적으로 항상 빈 결과가 된다 - 온톨로지/
-임베딩 파트 작업이 끝나면 [2]만 실제 구현으로 교체하면 나머지는 그대로 동작한다.
+    [0] 미응답 뉴스 선점        news_repository.claim_pending - status='PENDING'인
+                              뉴스를 'ANALYZING'으로 선점해 배치로 가져옴
+    [1] LLM 추출              qa_chain.extract_key_companies -> news_summary, origin_stocks
+                              (companies 유니버스 전체를 프롬프트에 같이 넣어 그
+                              밖의 기업을 지어내지 못하게 제한, origin_stocks는
+                              최대 1개. 비어 있으면 - 즉 유니버스 밖 뉴스면 -
+                              _analyze가 여기서 바로 None을 반환하고 [2]~[5]를
+                              전부 건너뜀)
+    [2] 온톨로지 조회          _explore_ontology - origin_stock 티커마다
+                              ontology_client.find_related_companies(ticker)를 호출해
+                              related_stocks 후보와 graph(2-hop 노드/엣지)를 함께 받고,
+                              origin_stocks가 여럿이면 결과를 합침
+    [3] RAG 근거 검색          _collect_evidence - find_mentions(키워드 직접 근거) +
+                              similarity_search(뉴스 요약 기반 의미 유사도 근거)
+    [4] LLM 종합              qa_chain.synthesize_related_stocks -> related_stocks, final_summary
+                              (연관기업 후보가 없어도 final_summary는 항상 필요해서
+                              스킵하지 않고 매번 호출)
+    [5] 응답 조립              related_stocks의 ticker/name/relation_label/relation_path는
+                              derived_candidates(온톨로지 하드 팩트)에서 그대로 가져오고,
+                              status/propagation만 [4] 결과로 채움. graph는 [2]에서 받은
+                              노드/엣지를 그대로 패싱하고 newsId만 RAG가 채움
+    [6] 응답 저장              _analyze가 None이 아닐 때만 response_repository.save,
+                              news_repository.mark_done은 항상 호출(관련 기업이
+                              없는 것도 정상 처리 완료로 취급)
+    [7] 사후 임베딩 트리거      _trigger_post_response_embedding
 
 배치 안에서 뉴스 1건이 실패해도(LLM 오류 등) 나머지 뉴스 처리는 계속 진행한다 -
 news_repository.mark_failed + response_repository.save_failure로 실패를 기록하고
@@ -27,17 +39,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.chains.qa_chain import (
     DerivedCompanyCandidate,
     extract_key_companies,
-    synthesize_derived_companies,
+    synthesize_related_stocks,
 )
+from app.repositories.company_repository import CompanyRepository
 from app.repositories.news_repository import NewsRecord, NewsRepository
+from app.repositories.ontology_client import find_related_companies
 from app.repositories.response_repository import ResponseRepository
 from app.repositories.vector_repository import VectorRepository
 from app.schemas.news_analysis import (
-    DerivedCompany,
-    EvidenceSource,
-    KeyCompany,
+    Graph,
+    GraphEdge,
+    GraphNode,
     NewsAnalysisResponse,
+    OriginStock,
     PendingAnalysisResult,
+    RelatedStock,
+    Source,
 )
 from app.services.ingestion_service import achunk_and_store, build_async_vector_store
 from app.utils.text_splitter import build_prefix
@@ -48,6 +65,7 @@ logger = logging.getLogger(__name__)
 class RetrievalService:
     def __init__(self, session: AsyncSession):
         self._news_repo = NewsRepository(session)
+        self._company_repo = CompanyRepository(session)
         self._vector_repo = VectorRepository(session)
         self._response_repo = ResponseRepository(session)
 
@@ -58,7 +76,8 @@ class RetrievalService:
         for news in pending:
             try:
                 response = await self._analyze(news)
-                await self._response_repo.save(news.news_id, response)
+                if response is not None:
+                    await self._response_repo.save(news.news_id, response)
                 await self._news_repo.mark_done(news.news_id)
                 await self._trigger_post_response_embedding(news)
                 results.append(PendingAnalysisResult(news_id=news.news_id, status="done"))
@@ -69,63 +88,110 @@ class RetrievalService:
                 results.append(PendingAnalysisResult(news_id=news.news_id, status="failed", error=str(e)))
         return results
 
-    async def _analyze(self, news: NewsRecord) -> NewsAnalysisResponse:
-        extraction = await extract_key_companies(news)
-        derived_candidates = await self._find_derived_candidates(extraction.key_companies)
-        vector_context = await self._collect_evidence(derived_candidates, extraction.key_companies)
-        llm_derived = await synthesize_derived_companies(
-            news, extraction.key_companies, derived_candidates, vector_context
+    async def _analyze(self, news: NewsRecord) -> NewsAnalysisResponse | None:
+        """뉴스 1건을 분석한다. origin_stocks가 비면(51개 유니버스와 무관한 뉴스)
+        None을 반환해 이후 온톨로지/RAG/종합 단계를 전부 건너뛴다 - analyze_pending은
+        이 경우 ai_responses 행을 만들지 않고 news.status만 DONE으로 남긴다(실패가
+        아니라 "분석할 대상이 없음"이라 news 재처리 대상에서는 정상적으로 빠짐)."""
+        companies = await self._company_repo.list_all()
+        extraction = await extract_key_companies(news, companies)
+
+        if not extraction.origin_stocks:
+            return None
+
+        derived_candidates, origin_id, graph_nodes, graph_edges = await self._explore_ontology(
+            extraction.origin_stocks
         )
+        news_summary_text = " ".join(extraction.news_summary)
+        vector_context = await self._collect_evidence(derived_candidates, extraction.origin_stocks, news_summary_text)
+        synthesis = await synthesize_related_stocks(
+            news, extraction.origin_stocks, derived_candidates, vector_context
+        )
+
+        candidates_by_key = {(c.ticker, c.name): c for c in derived_candidates}
+
+        # 프롬프트로 "후보 목록에 없는 기업을 새로 만들어내지 마세요"라고 지시해도
+        # LLM이 origin_stocks 자신 등 후보 밖 기업을 끼워 넣는 경우가 실제로
+        # 있어서, 온톨로지 후보에 없는 항목은 조용히 걸러낸다 (하드 팩트가 없는
+        # related_stocks는 relation_label/relation_path를 채울 수 없어 신뢰 불가).
+        related_stocks = [
+            RelatedStock(
+                ticker=r.ticker,
+                name=r.name,
+                status=r.status,
+                relation_label=candidates_by_key[(r.ticker, r.name)].relation_label,
+                relation_path=candidates_by_key[(r.ticker, r.name)].relation_path,
+                propagation=r.propagation,
+            )
+            for r in synthesis.related_stocks
+            if (r.ticker, r.name) in candidates_by_key
+        ]
 
         response = NewsAnalysisResponse(
             news_summary=extraction.news_summary,
-            key_companies=extraction.key_companies,
-            derived_companies=[
-                DerivedCompany(
-                    ticker=d.ticker,
-                    name=d.name,
-                    derived_from=d.derived_from,
-                    supply_relation=d.supply_relation,
-                    market_sentiment=d.market_sentiment,
-                    prediction=d.prediction,
-                    rationale=d.rationale,
-                    evidence_sources=self._to_evidence_sources(d.ticker, vector_context),
-                )
-                for d in llm_derived
-            ],
+            source=Source(
+                press=news.press,
+                published_at=str(news.published_at) if news.published_at else None,
+                url=news.url,
+            ),
+            origin_stocks=extraction.origin_stocks,
+            related_stocks=related_stocks,
+            final_summary=synthesis.final_summary,
+            graph=Graph(newsId=str(news.news_id), originId=origin_id, nodes=graph_nodes, edges=graph_edges),
         )
 
         return response
 
-    async def _find_derived_candidates(self, key_companies: list[KeyCompany]) -> list[DerivedCompanyCandidate]:
-        # 온톨로지(ontology_client)가 아직 없어서 항상 빈 리스트 - 온톨로지 파트
-        # 작업 완료 후 Neo4j 공급망 그래프 순회 결과로 교체.
-        return []
+    async def _explore_ontology(
+        self, origin_stocks: list[OriginStock]
+    ) -> tuple[list[DerivedCompanyCandidate], str, list[GraphNode], list[GraphEdge]]:
+        """origin_stock 티커마다 온톨로지(2-hop) 탐색 결과를 합친다.
+
+        ontology_client.find_related_companies(ticker)가 related_stocks(연관기업
+        후보)와 graph(노드/엣지)를 한 번에 반환하므로 같이 처리한다. origin_stocks가
+        여럿이면 각 결과를 (ticker, name)/node id 기준으로 중복 제거하며 합치고,
+        originId는 가장 먼저 나온 결과를 쓴다.
+        """
+        candidates: dict[tuple[str, str], DerivedCompanyCandidate] = {}
+        nodes: dict[str, GraphNode] = {}
+        edges: dict[str, GraphEdge] = {}
+        origin_id = ""
+
+        for origin_stock in origin_stocks:
+            if not origin_stock.ticker:
+                continue
+            result = await find_related_companies(origin_stock.ticker)
+            for fact in result.related_stocks:
+                dedup_key = (fact.ticker, fact.name)
+                candidates.setdefault(
+                    dedup_key,
+                    DerivedCompanyCandidate(
+                        ticker=fact.ticker,
+                        name=fact.name,
+                        relation_label=fact.relation_label,
+                        relation_path=fact.relation_path,
+                    ),
+                )
+            origin_id = origin_id or result.graph.originId
+            for node in result.graph.nodes:
+                nodes.setdefault(node.id, GraphNode(**node.model_dump()))
+            for edge in result.graph.edges:
+                edges.setdefault(edge.id, GraphEdge(**edge.model_dump()))
+
+        return list(candidates.values()), origin_id, list(nodes.values()), list(edges.values())
 
     async def _collect_evidence(
         self,
         derived_candidates: list[DerivedCompanyCandidate],
-        key_companies: list[KeyCompany],
+        origin_stocks: list[OriginStock],
+        news_summary_text: str,
     ) -> list[dict]:
         evidence: list[dict] = []
         for candidate in derived_candidates:
-            for key_company in key_companies:
-                evidence.extend(await self._vector_repo.find_mentions(candidate.ticker, key_company.name))
+            for origin_stock in origin_stocks:
+                evidence.extend(await self._vector_repo.find_mentions(candidate.ticker, origin_stock.name))
+            evidence.extend(await self._vector_repo.similarity_search(candidate.ticker, news_summary_text))
         return evidence
-
-    @staticmethod
-    def _to_evidence_sources(ticker: str, vector_context: list[dict]) -> list[EvidenceSource]:
-        return [
-            EvidenceSource(
-                source_type=c["source_type"],
-                title=c["title"],
-                url=c["url"],
-                published_date=c["published_date"],
-                excerpt=c["text"][:200],
-            )
-            for c in vector_context
-            if c["ticker"] == ticker
-        ]
 
     async def _trigger_post_response_embedding(self, news: NewsRecord) -> None:
         """분석 응답 저장 후 같은 뉴스를 pgvector에 사후 임베딩 (rag_architecture.md 0장/8장).
