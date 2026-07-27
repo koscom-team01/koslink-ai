@@ -21,22 +21,30 @@ class ResponseRepository:
             text(
                 """
                 INSERT INTO ai_responses
-                    (news_id, news_summary, key_companies, derived_companies, status)
+                    (news_id, news_summary, source, origin_stocks, related_stocks, final_summary, graph, status)
                 VALUES
-                    (:news_id, :news_summary, CAST(:key_companies AS jsonb), CAST(:derived_companies AS jsonb), 'done')
+                    (:news_id, CAST(:news_summary AS jsonb), CAST(:source AS jsonb),
+                     CAST(:origin_stocks AS jsonb), CAST(:related_stocks AS jsonb),
+                     :final_summary, CAST(:graph AS jsonb), 'done')
                 ON CONFLICT (news_id) DO UPDATE SET
                     news_summary = EXCLUDED.news_summary,
-                    key_companies = EXCLUDED.key_companies,
-                    derived_companies = EXCLUDED.derived_companies,
+                    source = EXCLUDED.source,
+                    origin_stocks = EXCLUDED.origin_stocks,
+                    related_stocks = EXCLUDED.related_stocks,
+                    final_summary = EXCLUDED.final_summary,
+                    graph = EXCLUDED.graph,
                     status = EXCLUDED.status,
                     error_message = NULL
                 """
             ),
             {
                 "news_id": news_id,
-                "news_summary": response.news_summary,
-                "key_companies": json.dumps([c.model_dump() for c in response.key_companies]),
-                "derived_companies": json.dumps([c.model_dump() for c in response.derived_companies]),
+                "news_summary": json.dumps(response.news_summary),
+                "source": response.source.model_dump_json(),
+                "origin_stocks": json.dumps([c.model_dump() for c in response.origin_stocks]),
+                "related_stocks": json.dumps([c.model_dump() for c in response.related_stocks]),
+                "final_summary": response.final_summary,
+                "graph": response.graph.model_dump_json(),
             },
         )
         await self._session.commit()

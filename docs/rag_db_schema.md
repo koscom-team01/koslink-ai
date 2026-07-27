@@ -78,31 +78,38 @@ RDBMS 테이블은 모두 **같은 PostgreSQL 인스턴스**(`koscomdb`)를 백�
 | ------------------- | ----------- | ------------------------------------------------------------ |
 | news_id             | bigint      | PK                                                            |
 | title / body / url / press / published_at | ... | 뉴스 원문 메타데이터                              |
-| status              | varchar(20) | pending \| analyzing \| done \| failed — AI 서버가 갱신       |
+| status              | varchar(20) | PENDING \| ANALYZING \| DONE \| FAILED — 백엔드가 PENDING으로 적재, 이후 AI 서버가 갱신 (실운영 데이터 기준 대문자, DB에 CHECK 제약 없음) |
 | analyzed_at         | timestamp   | nullable, AI 서버가 `ai_responses` 저장 후 기록                |
 | rag_embedded_at     | timestamp   | nullable, RAG 사후 임베딩 완료 후 기록                        |
 | ontology_learned_at | timestamp   | nullable, 온톨로지 사후 학습 완료 후 기록                      |
 
 - "응답 구성 여부" 하나의 boolean 대신 단계별 컬럼으로 나눈 이유: 응답 생성(analyzed_at)과 사후 임베딩(rag_embedded_at) / 온톨로지 학습(ontology_learned_at)이 서로 다른 시점에 끝나는 별개 작업이라, 나중에 "응답은 있는데 임베딩만 실패" 같은 상황을 구분하기 위함입니다.
-- 뉴스 리스트 조회 시 프론트 노출 여부는 `status='done'` (또는 `analyzed_at IS NOT NULL`)로 필터링합니다.
+- 뉴스 리스트 조회 시 프론트 노출 여부를 `status='DONE'`만으로 필터링하면 안 됩니다 — `origin_stocks`가 없는(유니버스 밖) 뉴스도 `DONE`으로 갱신되지만 `ai_responses`엔 행이 없습니다(1-5절 참고). 응답이 있는 뉴스만 보여주려면 `ai_responses`에 해당 `news_id` 행이 있는지로 판단해야 합니다.
 - AI 서버가 이 테이블의 상태 컬럼을 갱신할 수 있는 범위(쓰기 권한)는 백엔드 팀과 별도 확인이 필요합니다.
 
 ### 1-5. `ai_responses` — AI 서버가 직접 저장하는 뉴스별 분석 응답
+
+**2026-07-27 응답 포맷 개편**: `key_companies`/`derived_companies`(evidence_sources 포함) 구조를 `origin_stocks`/`related_stocks`/`final_summary`/`graph`로 재구성했습니다. `evidence_sources`는 응답에서 제거됨 — LLM이 `related_stocks.propagation` 문구를 쓸 때 내부 근거로만 쓰고 더 이상 응답에 노출하지 않습니다 (`rag/sql/005_update_ai_responses_new_format.sql`).
 
 | 컬럼               | 타입         | 제약        | 설명                                                        |
 | ------------------ | ------------ | ----------- | ------------------------------------------------------------ |
 | id                 | bigserial    | PK          |                                                                |
 | news_id            | bigint       | NOT NULL, UNIQUE | `news` 테이블의 news_id (앱 레벨 FK — 실제 DB 제약 여부는 미정) |
-| news_summary       | text         |             | 뉴스 요약                                                     |
-| key_companies      | jsonb        |             | 뉴스에 직접 언급된 주요 기업. `[{ticker, name}]`                |
-| derived_companies  | jsonb        |             | 온톨로지+RAG로 찾은 파생/연관 기업 + 판단 근거. `[{ticker, name, derived_from, supply_relation, market_sentiment, prediction, rationale, evidence_sources[]}]` (rag_architecture.md 응답 스키마 그대로) |
+| news_summary       | jsonb        |             | 뉴스 3줄 요약. `["문장1", "문장2", "문장3"]`                    |
+| source             | jsonb        |             | 뉴스 메타 정보(응답 조립 시 `news` 테이블에서 옮겨 담음). `{press, published_at, url}` |
+| origin_stocks      | jsonb        |             | 뉴스가 실제로 다루는 메인 기업 — LLM이 companies 유니버스(51개) 안에서 최대 1개만 추출(배열이지만 0~1개). `[{ticker, name, status: "up"\|"down", reason}]` |
+| related_stocks     | jsonb        |             | 온톨로지로 찾은 연관 기업. `ticker`/`name`/`relation_label`/`relation_path`는 온톨로지 하드 팩트, `status`/`propagation`만 LLM이 채움. `[{ticker, name, status: "up"\|"down", relation_label, relation_path, propagation}]` |
+| final_summary      | text         |             | 응답 전체를 종합한 3문장 내외 요약                              |
+| graph              | jsonb        |             | 프론트 그래프 시각화용 노드/엣지 — `originId`/`nodes`/`edges`는 온톨로지 `OntologyExploreResult.graph`를 그대로 저장(RAG는 패싱만, origin_stocks가 여럿이면 결과를 합침), `newsId`만 RAG가 채움. `{newsId, originId, nodes: [{id, name, ticker, marketType, capSize}], edges: [{id, source, target, relation}]}` |
 | status             | varchar(20)  | default 'done' | done \| failed                                            |
 | error_message      | text         | nullable    | LLM/조회 실패 시 원인 기록                                     |
 | created_at         | timestamp    | default now() |                                                              |
 
-- `key_companies`와 `derived_companies`를 별도 컬럼으로 나눈 이유: "뉴스에 나온 주요 기업"과 "그로부터 파생된 연관 기업"은 성격이 달라서(전자는 근거가 필요 없는 단순 추출, 후자는 판단 근거가 핵심) 나중에 각각 다르게 조회/가공하기 쉽도록 분리. 둘 다 정규화 대신 JSONB로 저장하는 건 MVP 범위에선 그대로 유지합니다.
+- `origin_stocks`와 `related_stocks`를 별도 컬럼으로 나눈 이유: "뉴스에 나온 주요 기업"과 "그로부터 파생된 연관 기업"은 성격이 달라서(전자는 텍스트 추출, 후자는 온톨로지 그래프 순회가 핵심) 나중에 각각 다르게 조회/가공하기 쉽도록 분리. 둘 다 정규화 대신 JSONB로 저장하는 건 MVP 범위에선 그대로 유지합니다.
+- `source`를 `news` 테이블과 별도로 다시 저장하는 이유: 응답 조립("검색/추출 결과 → 바로 응답에 사용")이 매 조회마다 `news`를 다시 join하지 않도록, 2-1절의 `cmetadata` denormalize 방침과 같은 이유로 적재 시점에 한 번 옮겨 담습니다.
+- `graph`를 RAG가 직접 조립하지 않는 이유: 노드에 필요한 `marketType`/`capSize` 같은 값이 지금 RAG 쪽 테이블에는 없고, 온톨로지 파트(`ontology_client.find_related_companies`)가 그래프 순회(2-hop) 결과를 이미 노드/엣지 형태로 구성해 넘겨주기 때문입니다. RAG는 이 값을 그대로 저장/패싱만 합니다.
 - `news_id`에 UNIQUE를 걸어 "한 뉴스 = 응답 1건"을 보장. 재분석이 필요하면 upsert로 덮어씁니다(버전 이력이 필요해지면 이후 별도 검토).
-- 프론트가 보는 "응답 구성 여부"는 이 테이블에 해당 `news_id` 행이 있는지(`status='done'`)로 판단할 수도 있고, 1-4의 `news.status` 컬럼으로 판단할 수도 있습니다 (성능상 후자가 조회는 더 간단).
+- **`origin_stocks`가 비어 있는 뉴스(companies 유니버스 51개와 무관한 뉴스)는 이 테이블에 행 자체가 생기지 않습니다 (2026-07-27 확정)**: `news.status`는 정상적으로 `'DONE'`까지 갱신되지만(재처리 대상에서는 빠짐), 보여줄 분석 결과가 없다고 판단해 `ai_responses` insert를 생략합니다. 그래서 **"응답 구성 여부"는 반드시 이 테이블에 `news_id` 행이 있는지로 판단해야 하고, `news.status='DONE'`만으로는 응답이 있다고 보장할 수 없습니다** (1-4절의 "후자가 더 간단" 설명은 더 이상 유효하지 않음).
 
 ### 1-6. `rag_ingestion_log` — 임베딩 처리 로그 (멱등성 보장)
 
@@ -178,7 +185,7 @@ evidence_sources = [
 | id          | uuid          | PK                                                                      |
 | collection_id | uuid        | FK → langchain_pg_collection.uuid                                      |
 | document    | text          | 청크 텍스트 (임베딩 계산에 실제 반영되는 값)                            |
-| embedding   | vector(1024)  | 임베딩 벡터 (KURE/BGE-M3 모두 1024차원)                                 |
+| embedding   | vector(3072)  | 임베딩 벡터 (기본 프로바이더 OpenAI `text-embedding-3-large` 기준 3072차원 - KURE/BGE-M3로 바꾸면 1024차원이라 기존 컬렉션과 호환 안 됨, 재임베딩 필요) |
 | cmetadata   | jsonb         | 메타데이터 전체 (아래 참고)                                             |
 
 `cmetadata`는 `langchain_postgres.PGVector`가 테이블을 자동 생성할 때 기본으로 만드는 **단일 jsonb 컬럼**입니다 — `PGVector(...).add_documents()`에 넘긴 `Document.metadata` dict가 그대로 이 컬럼에 통째로 들어갑니다. 별도로 컬럼을 나눠서 만들어주지 않고, 조회 시에도 `cmetadata->>'ticker'` 식으로 jsonb 연산자를 거쳐야 접근됩니다.

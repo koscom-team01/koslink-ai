@@ -84,9 +84,12 @@ CREATE INDEX IF NOT EXISTS idx_news_status ON news (status);
 CREATE TABLE IF NOT EXISTS ai_responses (
     id                bigserial   PRIMARY KEY,
     news_id           bigint      NOT NULL UNIQUE,
-    news_summary      text,
-    key_companies     jsonb,
-    derived_companies jsonb,
+    news_summary      jsonb,
+    source            jsonb,
+    origin_stocks     jsonb,
+    related_stocks    jsonb,
+    final_summary     text,
+    graph             jsonb,
     status            varchar(20) NOT NULL DEFAULT 'done',
     error_message     text,
     created_at        timestamp   NOT NULL DEFAULT now()

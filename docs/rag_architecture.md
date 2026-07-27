@@ -184,26 +184,41 @@ DART 원문이 필요할 때 새로 구현하지 말고 이걸 재사용할 것.
 
 ### 응답 스키마
 
-뉴스에 직접 언급된 **주요 기업**과, 온톨로지+RAG로 찾아낸 **파생/연관 기업**을 분리합니다. 판단 근거(파급경로+과거 이벤트)는 파생 기업 쪽에 붙습니다.
+뉴스가 실제로 다루는 **메인 기업**(origin_stocks)과, 온톨로지+RAG로 찾아낸 **연관 기업**(related_stocks)을 분리합니다. 파급 경로 서술(propagation)은 연관 기업 쪽에 붙습니다.
+
+`origin_stocks`는 배열이지만 최대 1개까지만 채워집니다 - 뉴스의 핵심 기업 1곳만 추출하도록 LLM 프롬프트로 제한하고, 응답 구조(FE와의 배열 계약)는 그대로 유지하기 위해 배열 형태를 씁니다. 비어 있으면(유니버스 밖 뉴스) `ai_responses`에 해당 news_id 행 자체가 없습니다.
 
 ```json
 {
-  "news_summary": "string",
-  "key_companies": [{ "ticker": "string", "name": "string" }],
-  "derived_companies": [
+  "news_summary": ["string", "string", "string"],
+  "source": { "press": "string", "published_at": "string", "url": "string" },
+  "origin_stocks": [
     {
       "ticker": "string",
       "name": "string",
-      "derived_from": "string (key_companies 중 파생 출발점이 된 ticker)",
-      "supply_relation": "string",
-      "market_sentiment": "긍정적|중립적|부정적",
-      "prediction": "상승세|보합|하락세",
-      "rationale": "string",
-      "evidence_sources": [
-        { "source_type": "disclosure|report|news", "title": "...", "url": "...", "published_date": "..." }
-      ]
+      "status": "up|down",
+      "reason": "string (왜 이 기업이 뉴스의 메인 기업인지)"
     }
-  ]
+  ],
+  "related_stocks": [
+    {
+      "ticker": "string",
+      "name": "string",
+      "status": "up|down",
+      "relation_label": "string (온톨로지 하드 팩트 - 그래프 뷰 엣지 라벨용, 예: 공급계약, 지분투자, 계열/관계사, 기술라이선싱, 경쟁사, 인수합병, 기타관계)",
+      "relation_path": "string (온톨로지 하드 팩트 - 예: 'SK하이닉스 → 한미반도체')",
+      "propagation": "string (파급 경로 서술, 기업명은 *기업명*으로 강조)"
+    }
+  ],
+  "final_summary": "string (응답 전체를 종합한 3문장 내외 요약)",
+  "graph": {
+    "newsId": "string",
+    "originId": "string",
+    "nodes": [
+      { "id": "string", "name": "string", "ticker": "string", "marketType": "string", "capSize": "string" }
+    ],
+    "edges": [{ "id": "string", "source": "string", "target": "string", "relation": "string" }]
+  }
 }
 ```
 
@@ -240,7 +255,7 @@ DART 원문이 필요할 때 새로 구현하지 말고 이걸 재사용할 것.
 - `companies` — 대상 기업 목록 (ticker, corp_code, name, role_code/role_name, size_tier). corp_code는 DART Open API 조회 키(8자리 고유번호, ticker와 다름)라 시드 데이터에 반드시 포함해야 합니다. role_code(예: `R_CHIP`, `R_IP`)는 온톨로지 파트의 분류 체계와 같은 시드 소스를 공유합니다.
 - `disclosures` — 사전 학습용 DART 공시 원문
 - `news_corpus` / `news` — 사전 학습용 과거 뉴스 원문 / 실시간 폴링 뉴스. 둘 다 데이터는 백엔드 쪽에서 구성해서 제공합니다.
-- `ai_responses` — AI 서버가 직접 저장하는 뉴스별 분석 응답 (news_summary, relevant_stocks 등)
+- `ai_responses` — AI 서버가 직접 저장하는 뉴스별 분석 응답 (news_summary, source, origin_stocks, related_stocks, final_summary, graph)
 - `rag_ingestion_log` — 임베딩 처리 로그. 사전 적재(공시/과거 뉴스)와 사후 임베딩(실시간 뉴스)에 공통으로 사용해 재적재 시 중복 벡터를 막습니다.
 - `langchain_pg_embedding` (`langchain_postgres.PGVector`가 자동 생성) — 실제 벡터 저장소. `document`는 오직 청크 텍스트만 반영하며, 검색 시 `ticker`/`source_type` 등 metadata로 먼저 필터링한 뒤 벡터 거리(`<=>`)로 top-k를 뽑습니다.
 
