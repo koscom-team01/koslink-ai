@@ -31,22 +31,49 @@ CONTRACT_KEYWORD = "공급계약체결"
 # 중복을 거르는 방식으로, 자정 경계나 배치 실행 누락에도 안전하게 만든다.
 LOOKBACK_DAYS = 2
 
+# 그래프 시각화 UI에서 SUPPLY_TO 엣지 라벨로 쓰기 위한 카테고리. 일반 투자자가
+# 라벨만 보고 "무엇을 공급하는 관계인지" 감을 잡을 수 있어야 하므로, 전문 공정
+# 용어(어닐링/증착/CVD 등)를 그대로 노출하지 않고 상위 개념으로 묶어둔다.
+PRODUCT_CATEGORIES = [
+    "테스트 장비 공급",
+    "열처리 장비 공급",
+    "반도체 제조장비 공급",
+    "세정 장비 공급",
+    "패키징 장비 공급",
+    "소재 공급",
+    "부품 공급",
+    "장비 공급",
+    "서비스/기타 공급",
+]
+
 CONTRACT_EXTRACTION_SCHEMA = {
     "type": "object",
     "properties": {
         "buyer_name": {"type": "string", "description": "계약 상대방(수요처) 회사의 한글 정식/약식 명칭"},
         "product_name": {"type": "string", "description": "공급 대상 제품/서비스명"},
+        "product_category": {
+            "type": "string",
+            "enum": PRODUCT_CATEGORIES,
+            "description": (
+                "공급 대상을 위 카테고리 중 하나로 분류. 전문 공정 용어(어닐링, 증착, "
+                "CVD 등)를 그대로 쓰지 말고 일반 투자자가 이해할 수 있는 카테고리를 "
+                "선택할 것. 애매하면 '장비 공급' 또는 '서비스/기타 공급'."
+            ),
+        },
         "contract_amount": {"type": "string", "description": "계약 금액 (문서에 기재된 형식 그대로)"},
     },
-    "required": ["buyer_name", "product_name", "contract_amount"],
+    "required": ["buyer_name", "product_name", "product_category", "contract_amount"],
     "additionalProperties": False,
 }
 
 CONTRACT_PROMPT_TEMPLATE = """아래는 "{supplier_name}"가 공시한 단일판매·공급계약체결 공시 본문입니다.
-이 계약의 상대방(수요처), 공급 대상 제품/서비스, 계약 금액을 JSON으로 추출해 주세요.
+이 계약의 상대방(수요처), 공급 대상 제품/서비스, 공급 카테고리, 계약 금액을 JSON으로 추출해 주세요.
 
 규칙:
 - buyer_name은 "{supplier_name}"이(가) 아닌, 계약 상대방 회사명이어야 합니다.
+- product_category는 반드시 다음 중 하나여야 합니다: {product_categories}
+  전문 공정 용어(어닐링, 증착, CVD 등)를 그대로 쓰지 말고, 일반 투자자가 이해할 수
+  있는 카테고리를 선택하세요. 애매하면 "장비 공급" 또는 "서비스/기타 공급".
 - 본문에서 명확히 확인되지 않으면 빈 문자열로 두고 추측하지 마세요.
 
 [공시 본문]
@@ -212,7 +239,11 @@ def already_recorded(session, dart_url: str) -> bool:
 
 
 def extract_contract_details(client: anthropic.Anthropic, model: str, doc_text: str, supplier_name: str) -> dict | None:
-    prompt = CONTRACT_PROMPT_TEMPLATE.format(supplier_name=supplier_name, doc_text=doc_text)
+    prompt = CONTRACT_PROMPT_TEMPLATE.format(
+        supplier_name=supplier_name,
+        doc_text=doc_text,
+        product_categories=", ".join(PRODUCT_CATEGORIES),
+    )
     try:
         response = client.messages.create(
             model=model,
@@ -314,6 +345,7 @@ def sync_new_supply_contracts():
                 }
                 MERGE (s)-[rel:SUPPLY_TO {dartUrl: $url}]->(buyer)
                 SET rel.product = $product,
+                    rel.productCategory = $product_category,
                     rel.amount = $amount,
                     rel.fact_source = $source,
                     rel.confidenceScore = 0.98,
@@ -330,6 +362,7 @@ def sync_new_supply_contracts():
                     b_name=extracted["buyer_name"],
                     amount=extracted["contract_amount"],
                     product=extracted["product_name"],
+                    product_category=extracted.get("product_category"),
                     source=item.report_nm,
                     url=dart_url,
                     now=now_str,
