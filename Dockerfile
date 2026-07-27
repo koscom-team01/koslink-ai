@@ -6,6 +6,9 @@ FROM python:3.11-slim-bookworm
 # 작업 디렉토리 설정
 WORKDIR /app
 
+# pip 타임아웃 증가 및 빌드 격리 생략 환경변수 (PyPI 네트워크 타임아웃 및 setuptools 재다운로드 방지)
+ENV PIP_DEFAULT_TIMEOUT=100
+
 # 공통 shared 라이브러리 및 requirements 복사
 COPY shared /shared
 COPY shared /app/shared
@@ -13,9 +16,9 @@ COPY rag/requirements.txt /app/rag_requirements.txt
 COPY ontology/requirements.txt /app/ontology_requirements.txt
 
 # Python 경량 의존성 및 공통 shared 패키지 설치
-RUN pip install --no-cache-dir -r /app/rag_requirements.txt && \
-    pip install --no-cache-dir -r /app/ontology_requirements.txt && \
-    pip install --no-cache-dir -e /app/shared
+RUN pip install --no-cache-dir --no-build-isolation -e /app/shared && \
+    pip install --no-cache-dir --no-build-isolation -r /app/rag_requirements.txt && \
+    pip install --no-cache-dir --no-build-isolation -r /app/ontology_requirements.txt
 
 # 소스 코드 복사
 COPY rag /app/rag
