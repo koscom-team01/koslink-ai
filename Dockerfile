@@ -6,11 +6,12 @@ FROM python:3.11-slim-bookworm
 # 작업 디렉토리 설정
 WORKDIR /app
 
-# pip 타임아웃, 리트라이 및 미러 설정 (해외 PyPI 네트워크 지연 및 타임아웃 방지)
+# pip 타임아웃, 리트라이 및 HTTP 미러 설정 (SSL 타임아웃 방지 및 초고속 다운로드)
 ENV PIP_DEFAULT_TIMEOUT=100 \
     PIP_RETRIES=10 \
-    PIP_INDEX_URL=https://mirror.kakao.com/pypi/simple \
-    PIP_EXTRA_INDEX_URL=https://pypi.org/simple
+    PIP_INDEX_URL=http://mirror.kakao.com/pypi/simple \
+    PIP_EXTRA_INDEX_URL=https://pypi.org/simple \
+    PIP_TRUSTED_HOST="mirror.kakao.com pypi.org files.pythonhosted.org"
 
 # 단일 통합 requirements.txt 및 shared 모듈 복사
 COPY requirements.txt /app/requirements.txt
