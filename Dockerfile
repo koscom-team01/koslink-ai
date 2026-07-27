@@ -6,20 +6,18 @@ FROM python:3.11-slim-bookworm
 # 작업 디렉토리 설정
 WORKDIR /app
 
-# 공식 PyPI 단일화, 타임아웃 300초, 리트라이 20회 설정 (네트워크 타임아웃 완벽 차단)
+# pip 타임아웃 및 리트라이 설정
 ENV PIP_DEFAULT_TIMEOUT=300 \
-    PIP_RETRIES=20 \
-    PIP_INDEX_URL=https://pypi.org/simple
+    PIP_RETRIES=20
 
-# 단일 통합 requirements.txt 및 shared 모듈 복사
+# requirements.txt 및 shared 모듈 복사
 COPY requirements.txt /app/requirements.txt
 COPY shared /app/shared
-COPY shared /shared
 
-# 1. 고정 버전 의존성 패키지 일괄 설치
-# 2. shared (dart-client) 패키지는 이미 설치된 의존성을 활용해 빌드 격리 없이(--no-build-isolation) 설치
+# 1. requirements.txt로 모든 파이썬 의존성 일괄 설치
+# 2. 로컬 shared (dart-client) 패키지 설치
 RUN pip install --no-cache-dir -r /app/requirements.txt && \
-    pip install --no-cache-dir --no-deps --no-build-isolation /app/shared
+    pip install --no-cache-dir --no-deps /app/shared
 
 # 소스 코드 복사
 COPY rag /app/rag
