@@ -6,8 +6,11 @@ FROM python:3.11-slim-bookworm
 # 작업 디렉토리 설정
 WORKDIR /app
 
-# pip 타임아웃 환경변수 설정 (100초)
-ENV PIP_DEFAULT_TIMEOUT=100
+# pip 타임아웃, 리트라이 및 미러 설정 (해외 PyPI 네트워크 지연 및 타임아웃 방지)
+ENV PIP_DEFAULT_TIMEOUT=100 \
+    PIP_RETRIES=10 \
+    PIP_INDEX_URL=https://mirror.kakao.com/pypi/simple \
+    PIP_EXTRA_INDEX_URL=https://pypi.org/simple
 
 # 단일 통합 requirements.txt 및 shared 모듈 복사
 COPY requirements.txt /app/requirements.txt
@@ -16,7 +19,7 @@ COPY shared /shared
 
 # 1. 의존성 패키지 일괄 설치
 # 2. shared (dart-client) 패키지는 이미 설치된 의존성을 활용해 빌드 격리 없이(--no-build-isolation) 설치
-RUN pip install --no-cache-dir --default-timeout=100 -r /app/requirements.txt && \
+RUN pip install --no-cache-dir -r /app/requirements.txt && \
     pip install --no-cache-dir --no-deps --no-build-isolation /app/shared
 
 # 소스 코드 복사
