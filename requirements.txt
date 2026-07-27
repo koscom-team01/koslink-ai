@@ -2,6 +2,9 @@
 # kosLINK AI 고정 버전(Pinned ==) requirements.txt
 # (Dependency Resolution 대기시간 0초 최적화)
 # ==========================================
+# 실제 코드에서 import하는 패키지만 포함합니다.
+# 미사용 메타 패키지(langchain, langchain-community, anthropic)는
+# PyTorch/Scikit-learn 등 수백 MB 바이너리를 끌고 오므로 제거했습니다.
 
 # Core Web Framework & Configuration
 fastapi==0.140.2
@@ -9,12 +12,12 @@ uvicorn[standard]==0.51.0
 pydantic-settings==2.14.2
 python-dotenv==1.2.2
 
-# Modular LangChain & LLM Providers
+# Modular LangChain (슬림 모듈만 사용)
+# 실제 import: langchain_core, langchain_openai, langchain_postgres, langchain_text_splitters
 langchain-core==1.5.1
 langchain-openai==1.4.1
 langchain-postgres==0.0.17
 langchain-text-splitters==1.1.2
-anthropic==0.120.0
 
 # Database - PostgreSQL & pgvector
 sqlalchemy==2.0.51
