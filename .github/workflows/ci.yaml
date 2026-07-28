@@ -1,0 +1,54 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    # 쿠버네티스 내부의 self-hosted Runner에서 실행
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Build and Push Docker Image
+      run: |
+        REGISTRY="harbor.hwangonjang.com"
+        PROJECT="library"
+        IMAGE_NAME="koslink-ai"
+        # 빌드 번호를 태그로 지정하여 유니크하게 관리
+        IMAGE_TAG="${{ github.run_number }}"
+        IMAGE_FULL_NAME="${REGISTRY}/${PROJECT}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+        echo "Building image: $IMAGE_FULL_NAME"
+        docker build -t "$IMAGE_FULL_NAME" .
+
+        echo "Logging into Harbor..."
+        docker login "$REGISTRY" -u admin -p Harbor12345
+
+        echo "Pushing image to Harbor..."
+        docker push "$IMAGE_FULL_NAME"
+
+        # 환경 변수로 전달하기 위해 저장
+        echo "NEW_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
+
+    # GitOps 레포(kosops)의 이미지 태그 값을 변경하여 ArgoCD 배포 유도
+    - name: Update GitOps Repository Image Tag
+      run: |
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git config --global user.name "koscom Bot"
+        
+        # 임시 폴더에 인프라 설정 레포(kosops) 클론
+        git clone https://x-access-token:${{ secrets.KOSOPS_PAT }}@github.com/koscom-team01/kosops.git gitops-repo
+        cd gitops-repo
+        
+        # koslink-ai-app.yaml 내의 이미지 태그 정보를 신규 빌드 번호로 수정
+        sed -i "s/tag: .*/tag: ${{ env.NEW_TAG }}/g" gitops/apps/koslink-ai-app.yaml
+        
+        # 수정사항 커밋 & 푸시
+        git add gitops/apps/koslink-ai-app.yaml
+        git commit -m "chore(gitops): update koslink-ai image tag to ${{ env.NEW_TAG }} [skip ci]"
+        git push origin main

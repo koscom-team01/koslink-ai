@@ -16,17 +16,41 @@ import asyncio
 import sys
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routers.news import router as news_router
 from app.config import get_settings
 
 app = FastAPI(title="kosLINK AI - RAG Server")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://koslink-ai.hwangonjang.com",
+        "http://koslink-ai.hwangonjang.com",
+        "https://koslink.hwangonjang.com",
+        "http://koslink.hwangonjang.com",
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "*",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(news_router)
+
+
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {"status": "ok", "message": "kosLINK AI Server is running"}
 
 
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
 
 
 async def _serve() -> None:
