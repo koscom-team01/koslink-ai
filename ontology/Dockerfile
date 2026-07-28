@@ -8,7 +8,10 @@ WORKDIR /app
 
 # ── pip 설정 ──
 ENV PIP_DEFAULT_TIMEOUT=300 \
-    PIP_RETRIES=10
+    PIP_RETRIES=10 \
+    PIP_INDEX_URL=http://mirror.kakao.com/pypi/simple \
+    PIP_EXTRA_INDEX_URL=https://pypi.org/simple \
+    PIP_TRUSTED_HOST=mirror.kakao.com
 
 # ── 빌드 도구 사전 설치 (PEP 517 격리 우회용) ──
 RUN pip install --no-cache-dir setuptools>=68 wheel
