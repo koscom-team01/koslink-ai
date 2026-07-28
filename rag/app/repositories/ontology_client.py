@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 # 않는다.
 _MAX_HOP = 2
 
+# related_stocks(=derived_candidates) 상한. 밀집 종목은 2-hop만으로 20개대까지
+# 나와서 그대로 두면 후보마다 도는 RAG 근거 수집(임베딩 API 호출)과
+# synthesize_related_stocks 프롬프트가 그만큼 커져 지연/비용이 늘어난다. 메인
+# 기업 1개당 파생기업은 최대 4개까지만 보여준다. related_stocks는 1-hop을 먼저
+# 채우고 2-hop을 이어붙이는 순서로 만들어지므로, 자르면 항상 가까운 관계부터 남는다.
+_MAX_RELATED_CANDIDATES = 4
+
 # Query A: 기준 종목에서 _MAX_HOP 이내에 있는 모든 노드를 찾는다 (자기 자신 제외).
 _FIND_NODES_QUERY = """
 MATCH (source:Stock {ticker: $ticker})
@@ -219,4 +226,4 @@ async def find_related_companies(ticker: str) -> OntologyExploreResult:
                 )
             )
 
-    return OntologyExploreResult(related_stocks=related_stocks, graph=graph)
+    return OntologyExploreResult(related_stocks=related_stocks[:_MAX_RELATED_CANDIDATES], graph=graph)

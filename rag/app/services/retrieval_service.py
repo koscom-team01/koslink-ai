@@ -35,6 +35,7 @@ news_repository.mark_failed + response_repository.save_failure로 실패를 기�
 다음 뉴스로 넘어간다 (analyze_pending 참고).
 """
 
+import asyncio
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +46,7 @@ from app.core.chains.qa_chain import (
     group_evidence_by_ticker,
     synthesize_related_stocks,
 )
+from app.core.embeddings.factory import get_embedding_provider
 from app.repositories.company_repository import CompanyRepository
 from app.repositories.news_repository import NewsRecord, NewsRepository
 from app.repositories.ontology_client import find_related_companies
@@ -222,12 +224,27 @@ class RetrievalService:
         origin_stocks: list[OriginStock],
         news_summary_text: str,
     ) -> list[dict]:
-        evidence: list[dict] = []
-        for candidate in derived_candidates:
-            for origin_stock in origin_stocks:
-                evidence.extend(await self._vector_repo.find_mentions(candidate.ticker, origin_stock.name))
-            evidence.extend(await self._vector_repo.similarity_search(candidate.ticker, news_summary_text))
-        return evidence
+        """후보 기업마다 순차로 DB조회+임베딩 API를 호출하면 후보 수만큼 네트워크
+        왕복이 그대로 쌓여 지연 시간이 늘어난다 - 후보별 근거 수집은 서로 독립적이라
+        asyncio.gather로 동시에 실행하고, 뉴스 요약 임베딩도 후보마다 재계산하지 않게
+        루프 밖에서 한 번만 구한다."""
+        if not derived_candidates:
+            return []
+
+        embedding = await get_embedding_provider().aembed_query(news_summary_text)
+
+        async def _collect_for_candidate(candidate: DerivedCompanyCandidate) -> list[dict]:
+            mention_results = await asyncio.gather(
+                *[
+                    self._vector_repo.find_mentions(candidate.ticker, origin_stock.name)
+                    for origin_stock in origin_stocks
+                ]
+            )
+            similarity_result = await self._vector_repo.similarity_search_by_vector(candidate.ticker, embedding)
+            return [item for mentions in mention_results for item in mentions] + similarity_result
+
+        results = await asyncio.gather(*[_collect_for_candidate(c) for c in derived_candidates])
+        return [item for candidate_evidence in results for item in candidate_evidence]
 
     async def _trigger_post_response_embedding(self, news: NewsRecord) -> None:
         """분석 응답 저장 후 같은 뉴스를 pgvector에 사후 임베딩 (rag_architecture.md 0장/8장).

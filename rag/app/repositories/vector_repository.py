@@ -3,8 +3,10 @@
 근거는 두 종류로 나눈다.
 1. find_mentions: derived 기업 자신의 청크 안에 key 기업 이름이 실제로 언급된
    청크를 찾는다 - 임베딩 없이 키워드 매칭(ILIKE)만으로 되는, 가장 확실한 직접 근거.
-2. similarity_search: 뉴스 요약과 derived 기업 청크 간 의미적 유사도로 찾는
-   간접 근거. PGVector.asimilarity_search에 ticker 필터를 걸어 그 기업 청크
+2. similarity_search_by_vector: 뉴스 요약과 derived 기업 청크 간 의미적 유사도로
+   찾는 간접 근거. 뉴스 요약 임베딩은 호출자(retrieval_service)가 후보 루프 밖에서
+   한 번만 계산해 넘긴다 - 후보마다 동일 텍스트를 재임베딩하는 낭비를 피하기 위함.
+   PGVector.asimilarity_search_by_vector에 ticker 필터를 걸어 그 기업 청크
    범위 안에서만 top-k를 가져온다.
 """
 
@@ -48,9 +50,9 @@ class VectorRepository:
         )
         return [dict(row) for row in result.mappings().all()]
 
-    async def similarity_search(self, ticker: str, query: str, k: int = 5) -> list[dict]:
+    async def similarity_search_by_vector(self, ticker: str, embedding: list[float], k: int = 5) -> list[dict]:
         vector_store = build_async_vector_store()
-        results = await vector_store.asimilarity_search(query, k=k, filter={"ticker": ticker})
+        results = await vector_store.asimilarity_search_by_vector(embedding, k=k, filter={"ticker": ticker})
         return [
             {
                 "ticker": r.metadata.get("ticker"),
