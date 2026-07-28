@@ -24,7 +24,7 @@ jobs:
         IMAGE_FULL_NAME="${REGISTRY}/${PROJECT}/${IMAGE_NAME}:${IMAGE_TAG}"
 
         echo "Building image: $IMAGE_FULL_NAME"
-        docker build -t "$IMAGE_FULL_NAME" .
+        docker build --provenance=false -t "$IMAGE_FULL_NAME" .
 
         echo "Logging into Harbor..."
         docker login "$REGISTRY" -u admin -p Harbor12345
