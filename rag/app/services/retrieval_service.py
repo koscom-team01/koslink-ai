@@ -45,6 +45,7 @@ from app.core.chains.qa_chain import (
     group_evidence_by_ticker,
     synthesize_related_stocks,
 )
+from app.core.reranker import rerank
 from app.repositories.company_repository import CompanyRepository
 from app.repositories.news_repository import NewsRecord, NewsRepository
 from app.repositories.ontology_client import find_related_companies
@@ -66,6 +67,11 @@ from app.services.ingestion_service import achunk_and_store, build_async_vector_
 from app.utils.text_splitter import build_prefix
 
 logger = logging.getLogger(__name__)
+
+# similarity_search가 뽑아오는 후보군 크기(리랭킹 전) / 리랭킹 후 최종적으로 남기는 근거 개수.
+# 후보군을 넉넉히 받아와야 리랭커가 정렬할 재료가 있다 - 이미 5개만 받으면 재정렬해봤자 의미 없음.
+_SIMILARITY_CANDIDATE_K = 15
+_EVIDENCE_TOP_K = 5
 
 
 class RetrievalService:
@@ -222,11 +228,31 @@ class RetrievalService:
         origin_stocks: list[OriginStock],
         news_summary_text: str,
     ) -> list[dict]:
+        """파생기업 티커별로 (키워드 직접 언급 + 의미 유사도) 후보를 모아 리랭킹한 근거를 합친다.
+
+        find_mentions(키워드 ILIKE)와 similarity_search(임베딩 코사인 거리) 둘 다
+        같은 딕셔너리 모양(ticker/source_type/title/url/published_date/text)을
+        반환하므로 그대로 합쳐서 리랭커에 넘길 수 있다. 두 검색이 같은 청크를 중복
+        반환할 수 있어 리랭킹 전에 (url, text) 기준으로 중복을 제거한다.
+        """
         evidence: list[dict] = []
         for candidate in derived_candidates:
+            mentions: list[dict] = []
             for origin_stock in origin_stocks:
-                evidence.extend(await self._vector_repo.find_mentions(candidate.ticker, origin_stock.name))
-            evidence.extend(await self._vector_repo.similarity_search(candidate.ticker, news_summary_text))
+                mentions.extend(await self._vector_repo.find_mentions(candidate.ticker, origin_stock.name))
+            similar = await self._vector_repo.similarity_search(
+                candidate.ticker, news_summary_text, k=_SIMILARITY_CANDIDATE_K
+            )
+
+            seen: set[tuple[str, str]] = set()
+            candidates_pool: list[dict] = []
+            for item in mentions + similar:
+                dedupe_key = (item["url"] or "", item["text"])
+                if dedupe_key not in seen:
+                    seen.add(dedupe_key)
+                    candidates_pool.append(item)
+
+            evidence.extend(rerank(news_summary_text, candidates_pool, top_k=_EVIDENCE_TOP_K))
         return evidence
 
     async def _trigger_post_response_embedding(self, news: NewsRecord) -> None:

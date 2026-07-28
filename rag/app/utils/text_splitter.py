@@ -7,8 +7,11 @@ scripts/backfill_corpus.py(사전 백필)와 향후 실시간 사후 임베딩�
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-CHUNK_SIZE = 3000
-CHUNK_OVERLAP = 200
+# NVIDIA FinanceBench 연구(금융 문서 대상) 기준 1024토큰 + 15% 오버랩이 최적으로
+# 확인됨. 이 코퍼스는 한국어라 실측 토큰/글자 비율(cl100k_base 기준 글자당 약
+# 1.0토큰)을 적용해 토큰 단위를 글자 단위로 그대로 대응시켰다.
+CHUNK_SIZE = 1024
+CHUNK_OVERLAP = 150
 
 
 def get_splitter() -> RecursiveCharacterTextSplitter:
