@@ -13,6 +13,7 @@ ProactorEventLoop에서 즉시 실패). 그래서 uvicorn.run()에 맡기지 않
 """
 
 import asyncio
+import logging
 import sys
 
 from fastapi import FastAPI
@@ -20,6 +21,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routers.news import router as news_router
 from app.config import get_settings
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 app = FastAPI(title="kosLINK AI - RAG Server")
 

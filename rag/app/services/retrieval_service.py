@@ -108,6 +108,7 @@ class RetrievalService:
         여부는 news.status와 ai_responses를 통해 확인해야 한다(docs/rag_architecture.md
         7장 계약 - AI 서버가 DB에 쓰고 백엔드/FE는 DB를 읽는 구조)."""
         pending = await self._news_repo.claim_pending(limit)
+        logger.info("[0/7] 미응답 뉴스 선점 완료 - %d건 (news_ids=%s)", len(pending), [n.news_id for n in pending])
 
         for news in pending:
             background_tasks.add_task(self._analyze_and_save, news, background_tasks)
@@ -115,18 +116,25 @@ class RetrievalService:
         return [PendingAnalysisResult(news_id=news.news_id, status="accepted") for news in pending]
 
     async def _analyze_and_save(self, news: NewsRecord, background_tasks: BackgroundTasks) -> None:
+        logger.info("[news_id=%s] 분석 파이프라인 시작", news.news_id)
         try:
             analyzed = await self._analyze(news)
             if analyzed is not None:
                 response, evidence_debug = analyzed
                 await self._response_repo.save(news.news_id, response, evidence_debug)
+                logger.info("[news_id=%s] [6/7] ai_responses 저장 완료", news.news_id)
+            else:
+                logger.info("[news_id=%s] [6/7] 저장 스킵 - 유니버스 밖 뉴스(관련 응답 없음)", news.news_id)
             await self._news_repo.mark_done(news.news_id)
+            logger.info("[news_id=%s] news.status=DONE 처리 완료", news.news_id)
             if get_settings().POST_RESPONSE_EMBEDDING_ENABLED:
                 background_tasks.add_task(self._trigger_post_response_embedding, news)
+                logger.info("[news_id=%s] [7/7] 사후 임베딩 백그라운드 예약", news.news_id)
         except Exception as e:
-            logger.exception("뉴스 분석 실패 - news_id=%s", news.news_id)
+            logger.exception("[news_id=%s] 분석 실패", news.news_id)
             await self._response_repo.save_failure(news.news_id, str(e))
             await self._news_repo.mark_failed(news.news_id)
+            logger.info("[news_id=%s] news.status=FAILED 처리", news.news_id)
 
     async def _analyze(
         self, news: NewsRecord
@@ -143,17 +151,31 @@ class RetrievalService:
         """
         companies = await self._company_repo.list_all()
         extraction = await extract_key_companies(news, companies)
+        logger.info(
+            "[news_id=%s] [1/7] LLM 추출 완료 - origin_stocks=%s",
+            news.news_id, [s.ticker for s in extraction.origin_stocks],
+        )
 
         if not extraction.origin_stocks:
+            logger.info("[news_id=%s] [1/7] origin_stocks 없음 - 유니버스 밖 뉴스, 이후 단계 스킵", news.news_id)
             return None
 
         derived_candidates, origin_id, graph_nodes, graph_edges = await self._explore_ontology(
             extraction.origin_stocks
         )
+        logger.info(
+            "[news_id=%s] [2/7] 온톨로지 조회 완료 - candidates=%d, nodes=%d, edges=%d",
+            news.news_id, len(derived_candidates), len(graph_nodes), len(graph_edges),
+        )
         news_summary_text = " ".join(extraction.news_summary)
         vector_context = await self._collect_evidence(derived_candidates, extraction.origin_stocks, news_summary_text)
+        logger.info("[news_id=%s] [3/7] RAG 근거 수집 완료 - evidence=%d건", news.news_id, len(vector_context))
         synthesis = await synthesize_related_stocks(
             news, extraction.origin_stocks, derived_candidates, vector_context
+        )
+        logger.info(
+            "[news_id=%s] [4/7] LLM 종합 완료 - related_stocks=%d",
+            news.news_id, len(synthesis.related_stocks),
         )
 
         candidates_by_ticker = {c.ticker: c for c in derived_candidates}
@@ -218,6 +240,7 @@ class RetrievalService:
             final_summary=synthesis.final_summary,
             graph=Graph(newsId=str(news.news_id), originId=origin_id, nodes=graph_nodes, edges=graph_edges),
         )
+        logger.info("[news_id=%s] [5/7] 응답 조립 완료 - related_stocks=%d", news.news_id, len(related_stocks))
 
         return response, evidence_debug
 
@@ -295,6 +318,7 @@ class RetrievalService:
         되지만(rag_embedded_at이 NULL로 남음), 최소한 사용자에게 보여줄 분석 응답은
         지켜야 한다는 우선순위다.
         """
+        logger.info("[news_id=%s] [7/7] 사후 임베딩 시작", news.news_id)
         try:
             prefix = build_prefix(news.title)
             metadata = {
@@ -307,5 +331,6 @@ class RetrievalService:
             }
             await achunk_and_store([(prefix, news.body, metadata)], build_async_vector_store())
             await self._news_repo.mark_embedded(news.news_id)
+            logger.info("[news_id=%s] [7/7] 사후 임베딩 완료 - rag_embedded_at 갱신", news.news_id)
         except Exception:
-            logger.exception("사후 임베딩 실패 - news_id=%s", news.news_id)
+            logger.exception("[news_id=%s] [7/7] 사후 임베딩 실패", news.news_id)
