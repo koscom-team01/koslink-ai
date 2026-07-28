@@ -8,13 +8,8 @@ FROM python:3.11-slim-bookworm
 WORKDIR /app
 
 # ── pip 설정 ──────────────────────────────────────
-# 카카오 HTTP 미러(primary) → pypi.org(fallback)
-# 대부분 패키지는 카카오에서 빠르게 받고, 미러에 없는 최신 패키지만 pypi.org 사용
-ENV PIP_DEFAULT_TIMEOUT=300 \
-    PIP_RETRIES=10 \
-    PIP_INDEX_URL=http://mirror.kakao.com/pypi/simple \
-    PIP_EXTRA_INDEX_URL=https://pypi.org/simple \
-    PIP_TRUSTED_HOST=mirror.kakao.com
+ENV PIP_DEFAULT_TIMEOUT=100 \
+    PIP_RETRIES=5
 
 # ── 빌드 도구 사전 설치 (PEP 517 격리 우회용) ────
 RUN pip install --no-cache-dir setuptools>=68 wheel

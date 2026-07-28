@@ -8,7 +8,7 @@ on:
 jobs:
   build-and-deploy:
     # 쿠버네티스 내부의 self-hosted Runner에서 실행
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Code
