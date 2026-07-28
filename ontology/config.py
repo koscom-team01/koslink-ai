@@ -16,6 +16,9 @@ class OntologySettings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-haiku-4-5"
 
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o-mini"
+
 
 @lru_cache
 def get_settings() -> OntologySettings:
