@@ -1,10 +1,16 @@
 """
-kosLINK AI - RAG 청킹 + 메타데이터 프리픽스 조립 Langflow Custom Component
+kosLINK AI - RAG 청킹 + 프리픽스 조립 Langflow Custom Component
 
 Langflow의 내장 노드 기능이 아닌 다음 두가지의 역할을 별도로 명시
 1. RecursiveCharacterTextSplitter로 본문을 청크 단위로 분할 (큰 청크 기준)
-2. 각 청크 앞에 [기업명]/[발행일]/[문서유형] 프리픽스를 붙여, 임베딩 벡터에 엔티티 정보가
+2. 각 청크 앞에 "[기업명 제목]" 문맥을 자연어에 가깝게 붙여, 임베딩 벡터에 엔티티 정보가
    녹아들도록 한다 (본문에 회사명이 대명사로만 언급되는 경우 검색 정확도가 떨어지는 문제 방지).
+
+발행일/URL처럼 자연어 문장이 아닌 날것의 태그는 프리픽스에 넣지 않는다 — 임베딩 품질에
+노이즈로 작용하기 때문(rag_db_schema.md 2-0절). 그런 값은 metadata로만 저장한다.
+source_type은 rag_architecture.md 7장 응답 스키마(evidence_sources)와 동일하게
+disclosure/news 두 가지만 쓴다 — news_backfill/news_realtime 구분은
+rag_ingestion_log(적재 추적 전용) 레벨의 세분화라 검색용 cmetadata까지 끌어올 필요는 없다.
 """
 
 from lfx.custom.custom_component.component import Component
@@ -16,7 +22,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 class ChunkAndPrefixComponent(Component):
     display_name = "Chunk & Prefix (kosLINK)"
-    description = "뉴스/공시 원문을 청크로 분할하고 [기업명]/[발행일]/[문서유형] 프리픽스를 붙인다."
+    description = "뉴스/공시 원문을 청크로 분할하고 [기업명 제목] 문맥을 프리픽스로 붙인다."
 
     inputs = [
         MessageTextInput(name="source_doc_id",
@@ -24,13 +30,12 @@ class ChunkAndPrefixComponent(Component):
         DropdownInput(
             name="source_type",
             display_name="문서 종류",
-            options=["news", "disclosure"],
+            options=["disclosure", "news"],
         ),
         MessageTextInput(name="company", display_name="기업명 (프리픽스 텍스트용)"),
         MessageTextInput(name="ticker", display_name="티커", value=""),
         MessageTextInput(name="published_date",
-                         display_name="발행일 (YYYY-MM-DD)"),
-        MessageTextInput(name="doc_type", display_name="문서유형 (예: 정기공시, 뉴스)"),
+                         display_name="발행일 (YYYY-MM-DD, metadata 전용)"),
         MessageTextInput(name="title", display_name="제목"),
         MessageTextInput(name="url", display_name="원문 링크", value=""),
         MessageTextInput(name="content", display_name="본문"),
@@ -43,10 +48,7 @@ class ChunkAndPrefixComponent(Component):
     ]
 
     def _build_prefix(self) -> str:
-        return (
-            f"[기업명: {self.company}] [발행일: {self.published_date}] "
-            f"[문서유형: {self.doc_type}]\n제목: {self.title}\n본문: "
-        )
+        return f"[{self.company} {self.title}]\n"
 
     def build_chunks(self) -> list[Data]:
         splitter = RecursiveCharacterTextSplitter(

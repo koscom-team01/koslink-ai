@@ -1,13 +1,21 @@
+# ==========================================
+# kosLINK RAG 로컬 개발용 requirements.txt
+# (Docker 빌드에서는 루트 requirements.txt를 사용합니다)
+# ==========================================
+# 미사용 메타 패키지(langchain, langchain-community)는 제거했습니다.
+# 이 패키지들은 PyTorch, Scikit-learn 등 70여 개 수백 MB 바이너리를
+# 전이 의존성으로 끌고 와서 빌드 시간이 10분 이상 소요됩니다.
+
+# Core Web Framework
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 pydantic-settings>=2.4.0
 
-# LangChain / LLM
-langchain>=0.3.0
+# LangChain 슬림 모듈 (실제 import하는 패키지만)
 langchain-core>=0.3.0
-langchain-anthropic>=0.2.0
+langchain-openai>=0.2.0
 langchain-postgres>=0.0.12
-langchain-community>=0.3.0
+langchain-text-splitters>=0.3.0
 
 # PostgreSQL / pgvector
 sqlalchemy[asyncio]>=2.0.30
@@ -19,10 +27,4 @@ alembic>=1.13.2
 # 온톨로지(Neo4j) 연동
 neo4j>=5.0.0
 
-# 임베딩 (kure, bge-m3 공통 sentence-transformers 백엔드)
-sentence-transformers>=3.0.1
-
 python-dotenv>=1.0.1
-
-# DART Open API 공용 클라이언트 (ontology팀과 공유, shared/dart_client)
--e ../shared

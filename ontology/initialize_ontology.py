@@ -10,9 +10,11 @@ kosLINK AI - Neo4j Ontology Initializer (53-Stock Semiconductor Scale)
 import sys
 from neo4j import GraphDatabase
 
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_USER = "neo4j"
-NEO4J_PASSWORD = "neo4jpassword"
+import os
+
+NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "neo4jpassword")
 
 # ==========================================
 # 1. 53대 기업 반도체 테마 및 기술군 데이터 정의

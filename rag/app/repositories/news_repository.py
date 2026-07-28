@@ -41,3 +41,11 @@ class NewsRepository:
         if row is None:
             return None
         return NewsRecord(**row)
+
+    async def mark_embedded(self, news_id: int) -> None:
+        """사후 임베딩 완료 시각 기록 (rag_db_schema.md 1-4절 - RAG 쪽 책임 컬럼)."""
+        await self._session.execute(
+            text("UPDATE news SET rag_embedded_at = now() WHERE news_id = :news_id"),
+            {"news_id": news_id},
+        )
+        await self._session.commit()
