@@ -28,7 +28,10 @@
     [6] 응답 저장              _analyze가 None이 아닐 때만 response_repository.save
                               (response + evidence_debug), news_repository.mark_done은
                               항상 호출(관련 기업이 없는 것도 정상 처리 완료로 취급)
-    [7] 사후 임베딩 트리거      _trigger_post_response_embedding
+    [7] 사후 임베딩 트리거      _trigger_post_response_embedding - 실패해도 응답에
+                              영향 없는 best-effort라 BackgroundTasks로 응답 반환 후
+                              실행되게 미뤄서, OpenAI 임베딩 API 지연이 HTTP 응답
+                              시간(및 게이트웨이 타임아웃)에 영향을 못 미치게 한다
 
 배치 안에서 뉴스 1건이 실패해도(LLM 오류 등) 나머지 뉴스 처리는 계속 진행한다 -
 news_repository.mark_failed + response_repository.save_failure로 실패를 기록하고
@@ -38,6 +41,7 @@ news_repository.mark_failed + response_repository.save_failure로 실패를 기�
 import asyncio
 import logging
 
+from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.chains.qa_chain import (
@@ -77,7 +81,9 @@ class RetrievalService:
         self._vector_repo = VectorRepository(session)
         self._response_repo = ResponseRepository(session)
 
-    async def analyze_pending(self, limit: int) -> list[PendingAnalysisResult]:
+    async def analyze_pending(
+        self, limit: int, background_tasks: BackgroundTasks
+    ) -> list[PendingAnalysisResult]:
         pending = await self._news_repo.claim_pending(limit)
 
         results = []
@@ -88,7 +94,7 @@ class RetrievalService:
                     response, evidence_debug = analyzed
                     await self._response_repo.save(news.news_id, response, evidence_debug)
                 await self._news_repo.mark_done(news.news_id)
-                await self._trigger_post_response_embedding(news)
+                background_tasks.add_task(self._trigger_post_response_embedding, news)
                 results.append(PendingAnalysisResult(news_id=news.news_id, status="done"))
             except Exception as e:
                 logger.exception("뉴스 분석 실패 - news_id=%s", news.news_id)

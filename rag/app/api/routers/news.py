@@ -7,7 +7,7 @@ AI 서버가 news.status='pending'을 직접 조회해서 정하므로, 백엔�
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 
 from app.api.deps import get_retrieval_service
 from app.schemas.news_analysis import PendingAnalysisResult
@@ -18,7 +18,8 @@ router = APIRouter(prefix="/api/v1/news", tags=["news"])
 
 @router.post("/analyze-pending", response_model=list[PendingAnalysisResult])
 async def analyze_pending_news(
+    background_tasks: BackgroundTasks,
     service: Annotated[RetrievalService, Depends(get_retrieval_service)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> list[PendingAnalysisResult]:
-    return await service.analyze_pending(limit)
+    return await service.analyze_pending(limit, background_tasks)
