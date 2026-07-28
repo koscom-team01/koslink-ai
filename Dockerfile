@@ -29,10 +29,10 @@ COPY ontology /app/ontology
 # Python 경로 설정
 ENV PYTHONPATH="/app/rag:/app"
 
-# ── 기본 환경변수 설정 ──────────────────────────────
+# ── 기본 환경변수 설정 (배포 환경 클러스터 내부 도메인 기본 적용) ──
 ENV PORT=8000 \
-    PG_CONNECTION_STRING="postgresql+psycopg://admin:adminpassword@localhost:5432/koscomdb" \
-    NEO4J_URI="bolt://localhost:7687" \
+    PG_CONNECTION_STRING="postgresql+psycopg://admin:adminpassword@postgresql.database.svc.cluster.local:5432/koscomdb" \
+    NEO4J_URI="bolt://neo4j.neo4j.svc.cluster.local:7687" \
     NEO4J_USER="neo4j" \
     NEO4J_PASSWORD="neo4jpassword" \
     DART_CACHE_DIR=".cache/dart" \
