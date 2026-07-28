@@ -14,14 +14,6 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v3
 
-    - name: Disable containerd image store
-      run: |
-        # GitHub 러너의 containerd snapshotter가 OCI 포맷 이미지를 생성하여
-        # Harbor에서 "unknown blob" 에러 발생 → 클래식 Docker 이미지 스토어로 전환
-        sudo mkdir -p /etc/docker
-        echo '{"features":{"containerd-snapshotter":false}}' | sudo tee /etc/docker/daemon.json
-        sudo systemctl restart docker
-
     - name: Build and Push Docker Image
       run: |
         REGISTRY="harbor.hwangonjang.com"
