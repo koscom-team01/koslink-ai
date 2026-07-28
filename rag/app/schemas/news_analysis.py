@@ -113,8 +113,10 @@ class NewsAnalysisResponse(BaseModel):
 
 
 class PendingAnalysisResult(BaseModel):
-    """POST /api/v1/news/analyze-pending 배치 처리 결과 - 뉴스 1건당 성공/실패."""
+    """POST /api/v1/news/analyze-pending 응답 - 이번 호출이 어떤 뉴스를 선점했는지만
+    알려준다. 실제 분석/저장은 응답 이후 백그라운드에서 진행되므로 status는 항상
+    "accepted"이고, 완료 여부(done/failed)는 news.status·ai_responses를 따로
+    조회해서 확인해야 한다."""
 
     news_id: int
-    status: Literal["done", "failed"]
-    error: str | None = None
+    status: Literal["accepted"]

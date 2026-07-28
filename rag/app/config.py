@@ -35,6 +35,11 @@ class Settings(BaseSettings):
 
     VECTOR_COLLECTION_NAME: str = "market_evidence"
 
+    # 분석 응답 저장 후 사후 임베딩(_trigger_post_response_embedding) 실행 여부.
+    # 겹치는 요청이 많을 때 자원 경합(DB 커넥션/OpenAI 레이트리밋) 부담을 줄이려고
+    # 잠시 꺼둔 상태 - 로직은 그대로 두고 스케줄링만 막는다. 다시 켤 땐 True로.
+    POST_RESPONSE_EMBEDDING_ENABLED: bool = False
+
     PORT: int = 8000
 
 

@@ -2,7 +2,14 @@
 
 흐름 (docs/rag_architecture.md 7장 "API 처리 흐름" 참고):
     [0] 미응답 뉴스 선점        news_repository.claim_pending - status='PENDING'인
-                              뉴스를 'ANALYZING'으로 선점해 배치로 가져옴
+                              뉴스를 'ANALYZING'으로 선점해 배치로 가져옴. 여기까지만
+                              analyze_pending이 응답 전에 동기로 처리하고, [1]~[7]은
+                              전부 BackgroundTasks로 미뤄 응답 이후에 실행한다 -
+                              백엔드가 호출할 때마다 LLM/RAG 파이프라인이 끝날 때까지
+                              기다리지 않게 하기 위함(analyze_pending/_analyze_and_save
+                              참고). 응답의 status="accepted"는 선점됐다는 뜻이지
+                              완료를 뜻하지 않으며, 실제 완료/실패는 news.status와
+                              ai_responses로 별도 확인해야 한다.
     [1] LLM 추출              qa_chain.extract_key_companies -> news_summary, origin_stocks
                               (companies 유니버스 전체를 프롬프트에 같이 넣어 그
                               밖의 기업을 지어내지 못하게 제한, origin_stocks는
@@ -50,6 +57,7 @@ from app.core.chains.qa_chain import (
     group_evidence_by_ticker,
     synthesize_related_stocks,
 )
+from app.config import get_settings
 from app.core.embeddings.factory import get_embedding_provider
 from app.repositories.company_repository import CompanyRepository
 from app.repositories.news_repository import NewsRecord, NewsRepository
@@ -84,24 +92,41 @@ class RetrievalService:
     async def analyze_pending(
         self, limit: int, background_tasks: BackgroundTasks
     ) -> list[PendingAnalysisResult]:
+        """claim_pending(선점)까지만 응답 전에 동기로 처리하고, LLM/RAG 분석·저장·
+        사후 임베딩은 전부 BackgroundTasks로 미뤄서 응답 이후에 실행한다. 백엔드가
+        호출할 때마다 파이프라인이 끝날 때까지 기다릴 필요가 없게 하기 위함 -
+        claim_pending은 단일 UPDATE...RETURNING이라 빨라서 동기로 둬도 응답
+        지연에 영향이 거의 없고, 오히려 이번 호출이 어떤 뉴스를 선점했는지
+        응답으로 바로 알려줄 수 있어 남겨둔다.
+
+        BackgroundTasks 안에서 또 background_tasks.add_task를 호출해도 안전하다 -
+        Starlette BackgroundTasks.__call__이 `for task in self.tasks`로 단순
+        리스트 순회라서, 실행 중 append된 항목(_trigger_post_response_embedding)도
+        같은 루프가 이어서 처리하고, 요청 스코프 DB 세션도 그동안 안 닫힌다.
+
+        응답의 status="accepted"는 처리 완료를 뜻하지 않는다 - 실제 완료/실패
+        여부는 news.status와 ai_responses를 통해 확인해야 한다(docs/rag_architecture.md
+        7장 계약 - AI 서버가 DB에 쓰고 백엔드/FE는 DB를 읽는 구조)."""
         pending = await self._news_repo.claim_pending(limit)
 
-        results = []
         for news in pending:
-            try:
-                analyzed = await self._analyze(news)
-                if analyzed is not None:
-                    response, evidence_debug = analyzed
-                    await self._response_repo.save(news.news_id, response, evidence_debug)
-                await self._news_repo.mark_done(news.news_id)
+            background_tasks.add_task(self._analyze_and_save, news, background_tasks)
+
+        return [PendingAnalysisResult(news_id=news.news_id, status="accepted") for news in pending]
+
+    async def _analyze_and_save(self, news: NewsRecord, background_tasks: BackgroundTasks) -> None:
+        try:
+            analyzed = await self._analyze(news)
+            if analyzed is not None:
+                response, evidence_debug = analyzed
+                await self._response_repo.save(news.news_id, response, evidence_debug)
+            await self._news_repo.mark_done(news.news_id)
+            if get_settings().POST_RESPONSE_EMBEDDING_ENABLED:
                 background_tasks.add_task(self._trigger_post_response_embedding, news)
-                results.append(PendingAnalysisResult(news_id=news.news_id, status="done"))
-            except Exception as e:
-                logger.exception("뉴스 분석 실패 - news_id=%s", news.news_id)
-                await self._response_repo.save_failure(news.news_id, str(e))
-                await self._news_repo.mark_failed(news.news_id)
-                results.append(PendingAnalysisResult(news_id=news.news_id, status="failed", error=str(e)))
-        return results
+        except Exception as e:
+            logger.exception("뉴스 분석 실패 - news_id=%s", news.news_id)
+            await self._response_repo.save_failure(news.news_id, str(e))
+            await self._news_repo.mark_failed(news.news_id)
 
     async def _analyze(
         self, news: NewsRecord
