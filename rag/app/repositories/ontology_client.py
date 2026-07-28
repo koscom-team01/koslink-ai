@@ -48,15 +48,21 @@ RETURN a.id AS source_id, b.id AS target_id, type(rel) AS edge_type,
 """
 
 # 그래프 시각화 UI에서 엣지 라벨로 쓸 짧은 한국어 표기. relation_type(RELATED_TO)과
-# SUPPLY_TO 둘 다 포함한다.
+# SUPPLY_TO 둘 다 포함한다. _to_label이 이 딕셔너리에 없는 키는 원본 영문 그대로
+# 반환해서, 실제 Neo4j 데이터의 relation_type 전체 목록(MATCH ()-[rel:RELATED_TO]->()
+# RETURN DISTINCT rel.relation_type로 확인)과 반드시 맞춰둬야 응답에 영문이
+# 새지 않는다.
 _RELATION_LABELS = {
     "SUPPLY_TO": "공급계약",
+    "SUPPLY_CHAIN": "공급망",
     "EQUITY_INVESTMENT": "지분투자",
     "AFFILIATE": "계열/관계사",
     "LICENSING": "기술라이선싱",
     "COMPETITOR": "경쟁사",
     "MNA": "인수합병",
     "OTHER": "기타관계",
+    "TECH_COOPERATION": "기술협력",
+    "MARKET_COMPETITION": "시장경쟁",
 }
 
 
