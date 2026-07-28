@@ -131,23 +131,33 @@ class RetrievalService:
             news, extraction.origin_stocks, derived_candidates, vector_context
         )
 
-        candidates_by_key = {(c.ticker, c.name): c for c in derived_candidates}
+        candidates_by_ticker = {c.ticker: c for c in derived_candidates}
         evidence_by_ticker = group_evidence_by_ticker(vector_context)
 
         # 프롬프트로 "후보 목록에 없는 기업을 새로 만들어내지 마세요"라고 지시해도
         # LLM이 origin_stocks 자신 등 후보 밖 기업을 끼워 넣는 경우가 실제로
-        # 있어서, 온톨로지 후보에 없는 항목은 조용히 걸러낸다 (하드 팩트가 없는
+        # 있어서, 온톨로지 후보에 없는 항목은 걸러낸다 (하드 팩트가 없는
         # related_stocks는 relation_label/relation_path를 채울 수 없어 신뢰 불가).
+        # name이 아니라 ticker로만 매칭한다 - 후보 목록엔 "이름(티커)"로 노출되는데
+        # 티커는 자연어 변형 여지가 없어 LLM이 그대로 echo하지만, 이름은 띄어쓰기·
+        # "㈜" 유무 등으로 미세하게 달라질 수 있어 (ticker, name) 조합으로 매칭하면
+        # 실제로는 유효한 응답을 이름 표기 차이만으로 조용히 떨어뜨리는 문제가 있었다.
+        # 매칭된 뒤엔 name도 candidate(온톨로지 원본) 쪽을 써서 표기를 통일한다.
         related_stocks: list[RelatedStock] = []
         evidence_debug: list[EvidenceDebugEntry] = []
         for r in synthesis.related_stocks:
-            candidate = candidates_by_key.get((r.ticker, r.name))
+            candidate = candidates_by_ticker.get(r.ticker)
             if candidate is None:
+                logger.warning(
+                    "synthesize_related_stocks가 후보 목록에 없는 ticker를 반환 - "
+                    "news_id=%s ticker=%s name=%s",
+                    news.news_id, r.ticker, r.name,
+                )
                 continue
             related_stocks.append(
                 RelatedStock(
-                    ticker=r.ticker,
-                    name=r.name,
+                    ticker=candidate.ticker,
+                    name=candidate.name,
                     status=r.status,
                     relation_label=candidate.relation_label,
                     relation_path=candidate.relation_path,
@@ -156,8 +166,8 @@ class RetrievalService:
             )
             evidence_debug.append(
                 EvidenceDebugEntry(
-                    ticker=r.ticker,
-                    name=r.name,
+                    ticker=candidate.ticker,
+                    name=candidate.name,
                     evidence_source=r.evidence_source,
                     retrieved_evidence=[
                         EvidenceSnippet(
@@ -166,7 +176,7 @@ class RetrievalService:
                             published_date=e["published_date"],
                             excerpt=e["text"][:200],
                         )
-                        for e in evidence_by_ticker.get(r.ticker, [])
+                        for e in evidence_by_ticker.get(candidate.ticker, [])
                     ],
                 )
             )
