@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS ai_responses (
     related_stocks    jsonb,
     final_summary     text,
     graph             jsonb,
+    evidence_debug    jsonb,
     status            varchar(20) NOT NULL DEFAULT 'done',
     error_message     text,
     created_at        timestamp   NOT NULL DEFAULT now()

@@ -9,23 +9,28 @@ import json
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.schemas.news_analysis import NewsAnalysisResponse
+from app.schemas.news_analysis import EvidenceDebugEntry, NewsAnalysisResponse
 
 
 class ResponseRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
 
-    async def save(self, news_id: int, response: NewsAnalysisResponse) -> None:
+    async def save(
+        self,
+        news_id: int,
+        response: NewsAnalysisResponse,
+        evidence_debug: list[EvidenceDebugEntry],
+    ) -> None:
         await self._session.execute(
             text(
                 """
                 INSERT INTO ai_responses
-                    (news_id, news_summary, source, origin_stocks, related_stocks, final_summary, graph, status)
+                    (news_id, news_summary, source, origin_stocks, related_stocks, final_summary, graph, evidence_debug, status)
                 VALUES
                     (:news_id, CAST(:news_summary AS jsonb), CAST(:source AS jsonb),
                      CAST(:origin_stocks AS jsonb), CAST(:related_stocks AS jsonb),
-                     :final_summary, CAST(:graph AS jsonb), 'done')
+                     :final_summary, CAST(:graph AS jsonb), CAST(:evidence_debug AS jsonb), 'done')
                 ON CONFLICT (news_id) DO UPDATE SET
                     news_summary = EXCLUDED.news_summary,
                     source = EXCLUDED.source,
@@ -33,6 +38,7 @@ class ResponseRepository:
                     related_stocks = EXCLUDED.related_stocks,
                     final_summary = EXCLUDED.final_summary,
                     graph = EXCLUDED.graph,
+                    evidence_debug = EXCLUDED.evidence_debug,
                     status = EXCLUDED.status,
                     error_message = NULL
                 """
@@ -45,6 +51,7 @@ class ResponseRepository:
                 "related_stocks": json.dumps([c.model_dump() for c in response.related_stocks]),
                 "final_summary": response.final_summary,
                 "graph": response.graph.model_dump_json(),
+                "evidence_debug": json.dumps([e.model_dump() for e in evidence_debug]),
             },
         )
         await self._session.commit()

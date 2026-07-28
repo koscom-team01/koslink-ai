@@ -21,10 +21,13 @@
     [5] 응답 조립              related_stocks의 ticker/name/relation_label/relation_path는
                               derived_candidates(온톨로지 하드 팩트)에서 그대로 가져오고,
                               status/propagation만 [4] 결과로 채움. graph는 [2]에서 받은
-                              노드/엣지를 그대로 패싱하고 newsId만 RAG가 채움
-    [6] 응답 저장              _analyze가 None이 아닐 때만 response_repository.save,
-                              news_repository.mark_done은 항상 호출(관련 기업이
-                              없는 것도 정상 처리 완료로 취급)
+                              노드/엣지를 그대로 패싱하고 newsId만 RAG가 채움. 동시에
+                              evidence_debug(related_stock별 evidence_source +
+                              실제 검색된 근거 청크)를 응답과 별도로 조립 - RAG
+                              적중률 분석용, FE 응답 계약엔 없음
+    [6] 응답 저장              _analyze가 None이 아닐 때만 response_repository.save
+                              (response + evidence_debug), news_repository.mark_done은
+                              항상 호출(관련 기업이 없는 것도 정상 처리 완료로 취급)
     [7] 사후 임베딩 트리거      _trigger_post_response_embedding
 
 배치 안에서 뉴스 1건이 실패해도(LLM 오류 등) 나머지 뉴스 처리는 계속 진행한다 -
@@ -39,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.chains.qa_chain import (
     DerivedCompanyCandidate,
     extract_key_companies,
+    group_evidence_by_ticker,
     synthesize_related_stocks,
 )
 from app.repositories.company_repository import CompanyRepository
@@ -47,6 +51,8 @@ from app.repositories.ontology_client import find_related_companies
 from app.repositories.response_repository import ResponseRepository
 from app.repositories.vector_repository import VectorRepository
 from app.schemas.news_analysis import (
+    EvidenceDebugEntry,
+    EvidenceSnippet,
     Graph,
     GraphEdge,
     GraphNode,
@@ -75,9 +81,10 @@ class RetrievalService:
         results = []
         for news in pending:
             try:
-                response = await self._analyze(news)
-                if response is not None:
-                    await self._response_repo.save(news.news_id, response)
+                analyzed = await self._analyze(news)
+                if analyzed is not None:
+                    response, evidence_debug = analyzed
+                    await self._response_repo.save(news.news_id, response, evidence_debug)
                 await self._news_repo.mark_done(news.news_id)
                 await self._trigger_post_response_embedding(news)
                 results.append(PendingAnalysisResult(news_id=news.news_id, status="done"))
@@ -88,11 +95,19 @@ class RetrievalService:
                 results.append(PendingAnalysisResult(news_id=news.news_id, status="failed", error=str(e)))
         return results
 
-    async def _analyze(self, news: NewsRecord) -> NewsAnalysisResponse | None:
+    async def _analyze(
+        self, news: NewsRecord
+    ) -> tuple[NewsAnalysisResponse, list[EvidenceDebugEntry]] | None:
         """뉴스 1건을 분석한다. origin_stocks가 비면(51개 유니버스와 무관한 뉴스)
         None을 반환해 이후 온톨로지/RAG/종합 단계를 전부 건너뛴다 - analyze_pending은
         이 경우 ai_responses 행을 만들지 않고 news.status만 DONE으로 남긴다(실패가
-        아니라 "분석할 대상이 없음"이라 news 재처리 대상에서는 정상적으로 빠짐)."""
+        아니라 "분석할 대상이 없음"이라 news 재처리 대상에서는 정상적으로 빠짐).
+
+        evidence_debug는 응답(NewsAnalysisResponse)과 별도로 반환한다 - FE 응답
+        계약에는 없고 ai_responses.evidence_debug 컬럼에만 저장되는, RAG 적중률
+        분석용 내부 데이터라서 섞지 않는다 (schemas/news_analysis.py의
+        EvidenceDebugEntry 참고).
+        """
         companies = await self._company_repo.list_all()
         extraction = await extract_key_companies(news, companies)
 
@@ -109,23 +124,44 @@ class RetrievalService:
         )
 
         candidates_by_key = {(c.ticker, c.name): c for c in derived_candidates}
+        evidence_by_ticker = group_evidence_by_ticker(vector_context)
 
         # 프롬프트로 "후보 목록에 없는 기업을 새로 만들어내지 마세요"라고 지시해도
         # LLM이 origin_stocks 자신 등 후보 밖 기업을 끼워 넣는 경우가 실제로
         # 있어서, 온톨로지 후보에 없는 항목은 조용히 걸러낸다 (하드 팩트가 없는
         # related_stocks는 relation_label/relation_path를 채울 수 없어 신뢰 불가).
-        related_stocks = [
-            RelatedStock(
-                ticker=r.ticker,
-                name=r.name,
-                status=r.status,
-                relation_label=candidates_by_key[(r.ticker, r.name)].relation_label,
-                relation_path=candidates_by_key[(r.ticker, r.name)].relation_path,
-                propagation=r.propagation,
+        related_stocks: list[RelatedStock] = []
+        evidence_debug: list[EvidenceDebugEntry] = []
+        for r in synthesis.related_stocks:
+            candidate = candidates_by_key.get((r.ticker, r.name))
+            if candidate is None:
+                continue
+            related_stocks.append(
+                RelatedStock(
+                    ticker=r.ticker,
+                    name=r.name,
+                    status=r.status,
+                    relation_label=candidate.relation_label,
+                    relation_path=candidate.relation_path,
+                    propagation=r.propagation,
+                )
             )
-            for r in synthesis.related_stocks
-            if (r.ticker, r.name) in candidates_by_key
-        ]
+            evidence_debug.append(
+                EvidenceDebugEntry(
+                    ticker=r.ticker,
+                    name=r.name,
+                    evidence_source=r.evidence_source,
+                    retrieved_evidence=[
+                        EvidenceSnippet(
+                            source_type=e["source_type"],
+                            title=e["title"],
+                            published_date=e["published_date"],
+                            excerpt=e["text"][:200],
+                        )
+                        for e in evidence_by_ticker.get(r.ticker, [])
+                    ],
+                )
+            )
 
         response = NewsAnalysisResponse(
             news_summary=extraction.news_summary,
@@ -140,7 +176,7 @@ class RetrievalService:
             graph=Graph(newsId=str(news.news_id), originId=origin_id, nodes=graph_nodes, edges=graph_edges),
         )
 
-        return response
+        return response, evidence_debug
 
     async def _explore_ontology(
         self, origin_stocks: list[OriginStock]

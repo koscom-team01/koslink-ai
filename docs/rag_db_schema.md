@@ -101,6 +101,7 @@ RDBMS 테이블은 모두 **같은 PostgreSQL 인스턴스**(`koscomdb`)를 백�
 | related_stocks     | jsonb        |             | 온톨로지로 찾은 연관 기업. `ticker`/`name`/`relation_label`/`relation_path`는 온톨로지 하드 팩트, `status`/`propagation`만 LLM이 채움. `[{ticker, name, status: "up"\|"down", relation_label, relation_path, propagation}]` |
 | final_summary      | text         |             | 응답 전체를 종합한 3문장 내외 요약                              |
 | graph              | jsonb        |             | 프론트 그래프 시각화용 노드/엣지 — `originId`/`nodes`/`edges`는 온톨로지 `OntologyExploreResult.graph`를 그대로 저장(RAG는 패싱만, origin_stocks가 여럿이면 결과를 합침), `newsId`만 RAG가 채움. `{newsId, originId, nodes: [{id, name, ticker, marketType, capSize}], edges: [{id, source, target, relation}]}` |
+| evidence_debug     | jsonb        |             | **FE 응답 계약(NewsAnalysisResponse)엔 없는 내부 전용 컬럼(2026-07-27 추가)** — RAG 근거 적중률 분석용. `related_stocks`와 1:1로 대응하며, `evidence_source`는 LLM이 propagation을 쓸 때 실제 RAG 근거를 참고했는지(`rag`)/근거가 부족해 자체 추론했는지(`inferred`) 자가 판단한 값이고, `retrieved_evidence`는 그 판단과 무관하게 벡터검색에서 실제로 찾힌 청크 전부(LLM이 근거를 무시했어도 남음). `[{ticker, name, evidence_source: "rag"\|"inferred", retrieved_evidence: [{source_type, title, published_date, excerpt}]}]` |
 | status             | varchar(20)  | default 'done' | done \| failed                                            |
 | error_message      | text         | nullable    | LLM/조회 실패 시 원인 기록                                     |
 | created_at         | timestamp    | default now() |                                                              |
@@ -108,6 +109,7 @@ RDBMS 테이블은 모두 **같은 PostgreSQL 인스턴스**(`koscomdb`)를 백�
 - `origin_stocks`와 `related_stocks`를 별도 컬럼으로 나눈 이유: "뉴스에 나온 주요 기업"과 "그로부터 파생된 연관 기업"은 성격이 달라서(전자는 텍스트 추출, 후자는 온톨로지 그래프 순회가 핵심) 나중에 각각 다르게 조회/가공하기 쉽도록 분리. 둘 다 정규화 대신 JSONB로 저장하는 건 MVP 범위에선 그대로 유지합니다.
 - `source`를 `news` 테이블과 별도로 다시 저장하는 이유: 응답 조립("검색/추출 결과 → 바로 응답에 사용")이 매 조회마다 `news`를 다시 join하지 않도록, 2-1절의 `cmetadata` denormalize 방침과 같은 이유로 적재 시점에 한 번 옮겨 담습니다.
 - `graph`를 RAG가 직접 조립하지 않는 이유: 노드에 필요한 `marketType`/`capSize` 같은 값이 지금 RAG 쪽 테이블에는 없고, 온톨로지 파트(`ontology_client.find_related_companies`)가 그래프 순회(2-hop) 결과를 이미 노드/엣지 형태로 구성해 넘겨주기 때문입니다. RAG는 이 값을 그대로 저장/패싱만 합니다.
+- `evidence_debug`를 `related_stocks`와 별도 컬럼으로 분리한 이유: RAG 근거 텍스트(청크 원문)를 FE가 볼 응답에 그대로 노출하면 계약이 지저분해지고(이전엔 `evidence_sources`가 이 역할이었다가 응답에서 제거됨), 반대로 아예 안 남기면 "RAG가 실제로 뭘 찾았는지" 사후 검증이 불가능해집니다. `evidence_source`(LLM 자가 판단)와 `retrieved_evidence`(실제 검색 결과)를 둘 다 남겨서, "LLM이 근거를 썼다고 주장한 것"과 "실제로 검색된 것"을 분리해 사람이 검수할 수 있게 합니다.
 - `news_id`에 UNIQUE를 걸어 "한 뉴스 = 응답 1건"을 보장. 재분석이 필요하면 upsert로 덮어씁니다(버전 이력이 필요해지면 이후 별도 검토).
 - **`origin_stocks`가 비어 있는 뉴스(companies 유니버스 51개와 무관한 뉴스)는 이 테이블에 행 자체가 생기지 않습니다 (2026-07-27 확정)**: `news.status`는 정상적으로 `'DONE'`까지 갱신되지만(재처리 대상에서는 빠짐), 보여줄 분석 결과가 없다고 판단해 `ai_responses` insert를 생략합니다. 그래서 **"응답 구성 여부"는 반드시 이 테이블에 `news_id` 행이 있는지로 판단해야 하고, `news.status='DONE'`만으로는 응답이 있다고 보장할 수 없습니다** (1-4절의 "후자가 더 간단" 설명은 더 이상 유효하지 않음).
 

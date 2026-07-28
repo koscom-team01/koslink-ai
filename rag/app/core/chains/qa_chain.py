@@ -22,6 +22,8 @@ final_summary는 종합 호출에서 같이 만든다 - origin_stocks만 있고 
 생략했지만, 지금은 그러면 final_summary를 만들 수 없다).
 """
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 from app.core.llm.openai_client import get_llm
@@ -51,6 +53,7 @@ class LLMRelatedStock(BaseModel):
     name: str
     status: Direction
     propagation: str
+    evidence_source: Literal["rag", "inferred"]
 
 
 class _SynthesisResult(BaseModel):
@@ -70,19 +73,24 @@ EXTRACTION_SYSTEM_PROMPT = (
 
 SYNTHESIS_SYSTEM_PROMPT = (
     "당신은 반도체 산업 전문 애널리스트입니다. 뉴스, 온톨로지가 찾은 연관기업 "
-    "후보(relation_label/relation_path로 표현된 공급망 관계), 그 기업들에 대한 "
+    "후보(relation_label/relation_path로 표현된 공급망 관계), 후보마다 딸린 "
     "과거 근거 자료를 받습니다. 후보 목록에 있는 기업에 대해서만 이 뉴스로 주가가 "
     "오를지(up)/내릴지(down) status를 판단하고, 뉴스가 그 기업으로 어떻게 "
     "파급되는지 propagation에 한 문장으로 쓰세요 - 기업명은 *기업명*처럼 별표로 "
     "감싸 강조하세요. 후보 목록에 없는 기업을 새로 만들어내지 마세요.\n\n"
-    "propagation을 쓸 때 [과거 이벤트 (RAG 검색)] 자료를 아래 기준으로 다루세요:\n"
+    "propagation을 쓸 때 그 기업에 딸린 근거 자료를 아래 기준으로 다루세요:\n"
     "- 근거가 있으면: 그 내용이 실제로 이 기업-관계에 들어맞는지 먼저 검증한 뒤 "
-    "반영하세요. 관계와 무관하거나 논리가 안 맞는 근거는 무시하세요.\n"
-    "- 근거가 부족하거나 없으면: relation_label/relation_path와 반도체 산업 "
-    "일반 지식을 바탕으로 논리적으로 타당한 파급 경로를 추론해서 문장을 "
-    "완성하세요. 다만 존재를 확인할 수 없는 구체적 수치·날짜·계약명·금액을 "
+    "반영하고, evidence_source를 'rag'로 표시하세요. 관계와 무관하거나 논리가 "
+    "안 맞는 근거는 무시하세요(이 경우 근거가 없는 것과 동일하게 취급).\n"
+    "- 근거가 부족하거나 없으면(또는 있어도 무관해서 버렸으면): "
+    "relation_label/relation_path와 반도체 산업 일반 지식을 바탕으로 논리적으로 "
+    "타당한 파급 경로를 추론해서 문장을 완성하고, evidence_source를 'inferred'로 "
+    "표시하세요. 다만 존재를 확인할 수 없는 구체적 수치·날짜·계약명·금액을 "
     "지어내지 마세요 - '~할 가능성이 있다'처럼 추론임을 알 수 있는 어조는 "
-    "괜찮습니다.\n\n"
+    "괜찮습니다.\n"
+    "evidence_source는 실제 답변 품질 검증에 쓰이니 정직하게 표시하세요 - 근거를 "
+    "참고했다고 매번 'rag'로 표시하지 말고, 조금이라도 자체 추론이 섞였으면 "
+    "'inferred'로 표시하세요.\n\n"
     "마지막으로 origin_stocks와 related_stocks 분석 전체를 종합한 3문장 내외의 "
     "final_summary를 작성하세요."
 )
@@ -90,6 +98,20 @@ SYNTHESIS_SYSTEM_PROMPT = (
 
 def _build_universe_text(companies: list[CompanyRecord]) -> str:
     return "\n".join(f"- {c.ticker} {c.name}" for c in companies)
+
+
+def group_evidence_by_ticker(vector_context: list[dict]) -> dict[str, list[dict]]:
+    """벡터검색 결과를 후보 기업(ticker) 단위로 묶는다.
+
+    retrieval_service._collect_evidence가 반환하는 vector_context는 후보
+    기업들의 근거가 한 리스트에 섞여 있어서(각 항목엔 ticker 필드만 붙어있음),
+    프롬프트에 넣을 때(_build_synthesis_prompt)와 evidence_debug를 조립할 때
+    (retrieval_service._analyze) 둘 다 "이 근거가 어느 기업 것인지" 구분해야
+    해서 공통으로 쓴다."""
+    grouped: dict[str, list[dict]] = {}
+    for item in vector_context:
+        grouped.setdefault(item["ticker"], []).append(item)
+    return grouped
 
 
 async def extract_key_companies(news: NewsRecord, companies: list[CompanyRecord]) -> ExtractionResult:
@@ -122,25 +144,30 @@ def _build_synthesis_prompt(
     derived_candidates: list[DerivedCompanyCandidate],
     vector_context: list[dict],
 ) -> str:
-    candidates_text = (
-        "\n".join(f"- {c.name}({c.ticker}): {c.relation_path} [{c.relation_label}]" for c in derived_candidates)
-        if derived_candidates
-        else "후보 없음."
-    )
-    if vector_context:
-        evidence_text = "\n".join(
-            f"- ({c['source_type']}) {c['title']} ({c['published_date']}): {c.get('text', '')}"
-            for c in vector_context
-        )
+    evidence_by_ticker = group_evidence_by_ticker(vector_context)
+
+    if derived_candidates:
+        candidate_blocks = []
+        for c in derived_candidates:
+            evidence_items = evidence_by_ticker.get(c.ticker, [])
+            evidence_text = (
+                "\n".join(
+                    f"    - ({e['source_type']}) {e['title']} ({e['published_date']}): {e.get('text', '')}"
+                    for e in evidence_items
+                )
+                if evidence_items
+                else "    근거 자료 없음."
+            )
+            candidate_blocks.append(f"- {c.name}({c.ticker}): {c.relation_path} [{c.relation_label}]\n  근거:\n{evidence_text}")
+        candidates_text = "\n".join(candidate_blocks)
     else:
-        evidence_text = "근거 자료 없음."
+        candidates_text = "후보 없음."
 
     return (
         f"[뉴스 제목]\n{news.title}\n\n"
         f"[뉴스 본문]\n{news.body}\n\n"
         f"[주요 기업]\n{[c.name for c in origin_stocks]}\n\n"
-        f"[연관기업 후보 (온톨로지)]\n{candidates_text}\n\n"
-        f"[과거 이벤트 (RAG 검색)]\n{evidence_text}"
+        f"[연관기업 후보 및 과거 근거 (온톨로지 + RAG)]\n{candidates_text}"
     )
 
 

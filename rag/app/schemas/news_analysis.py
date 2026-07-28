@@ -50,6 +50,30 @@ class RelatedStock(BaseModel):
     propagation: str
 
 
+class EvidenceSnippet(BaseModel):
+    """related_stock 하나에 실제로 검색된 근거 청크 1건 - evidence_debug 전용."""
+
+    source_type: Literal["disclosure", "report", "news"]
+    title: str
+    published_date: str
+    excerpt: str
+
+
+class EvidenceDebugEntry(BaseModel):
+    """related_stock별 근거 판단 디버그 정보 - RAG 적중률 분석용으로 ai_responses의
+    별도 컬럼(evidence_debug)에만 저장되고 NewsAnalysisResponse(FE 응답 계약)에는
+    포함되지 않는다. evidence_source는 LLM이 propagation을 쓸 때 실제 RAG 근거를
+    참고했는지(rag) 근거가 부족해 자체 추론했는지(inferred) 자가 판단한 값이고,
+    retrieved_evidence는 그 판단과 무관하게 벡터검색에서 실제로 찾힌 청크 전부다 -
+    "LLM이 근거를 썼다고 한 것"과 "실제로 검색된 것"을 분리해서 봐야 사람이
+    사후에 검색 품질 자체를 검수할 수 있다."""
+
+    ticker: str
+    name: str
+    evidence_source: Literal["rag", "inferred"]
+    retrieved_evidence: list[EvidenceSnippet] = []
+
+
 class GraphNode(BaseModel):
     """그래프 시각화용 노드 - ontology_client.OntologyExploreResult.graph.nodes를
     그대로 패싱한다 (필드 구성은 온톨로지 쪽 계약을 그대로 따름)."""
