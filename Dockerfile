@@ -8,13 +8,8 @@ FROM python:3.11-slim-bookworm
 WORKDIR /app
 
 # ── pip 설정 ──────────────────────────────────────
-# 1. 타임아웃 & 리트라이를 충분히 설정
-# 2. 카카오 미러(HTTP 80)를 사용하여 K8s NAT Gateway의 HTTPS/SSL 세션 타임아웃 방지
-# 3. trusted-host 지정으로 HTTP 미러 허용
-ENV PIP_DEFAULT_TIMEOUT=100 \
-    PIP_RETRIES=10 \
-    PIP_INDEX_URL=http://mirror.kakao.com/pypi/simple \
-    PIP_TRUSTED_HOST=mirror.kakao.com
+ENV PIP_DEFAULT_TIMEOUT=300 \
+    PIP_RETRIES=10
 
 # ── 빌드 도구 사전 설치 (PEP 517 격리 우회용) ────
 RUN pip install --no-cache-dir setuptools>=68 wheel
