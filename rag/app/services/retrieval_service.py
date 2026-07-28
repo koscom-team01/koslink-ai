@@ -290,14 +290,21 @@ class RetrievalService:
     ) -> list[dict]:
         """후보 기업마다 순차로 DB조회+임베딩 API를 호출하면 후보 수만큼 네트워크
         왕복이 그대로 쌓여 지연 시간이 늘어난다 - 후보별 근거 수집은 서로 독립적이라
-        asyncio.gather로 동시에 실행하고, 뉴스 요약 임베딩도 후보마다 재계산하지 않게
-        루프 밖에서 한 번만 구한다."""
+        asyncio.gather로 동시에 실행한다.
+
+        검색 쿼리는 뉴스 요약만이 아니라 candidate.relation_path(온톨로지가 찾은
+        공급망 관계 - 예: "SK하이닉스향 실리콘 부품 공급")를 같이 붙여서 임베딩한다.
+        뉴스 요약만으로 검색하면 "반도체 주가 하락류"의 일반적인 유사 청크만 걸려서
+        해당 후보-관계에 특화된 근거를 못 찾는 경우가 많았다 - 관계 문구를 쿼리에
+        포함하면 그 관계를 실제로 뒷받침하는 청크를 찾을 확률이 올라간다. 후보마다
+        쿼리가 달라지므로 임베딩도 후보별로 계산한다(이전엔 루프 밖에서 한 번만
+        계산했으나 관계 특화 검색을 위해 포기)."""
         if not derived_candidates:
             return []
 
-        embedding = await get_embedding_provider().aembed_query(news_summary_text)
-
         async def _collect_for_candidate(candidate: DerivedCompanyCandidate) -> list[dict]:
+            query_text = f"{news_summary_text} {candidate.relation_path}"
+            embedding = await get_embedding_provider().aembed_query(query_text)
             mention_results = await asyncio.gather(
                 *[
                     self._vector_repo.find_mentions(candidate.ticker, origin_stock.name)

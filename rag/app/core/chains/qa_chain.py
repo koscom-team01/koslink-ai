@@ -94,7 +94,10 @@ SYNTHESIS_SYSTEM_PROMPT = (
     "참고했다고 매번 'rag'로 표시하지 말고, 조금이라도 자체 추론이 섞였으면 "
     "'inferred'로 표시하세요.\n\n"
     "마지막으로 origin_stocks와 related_stocks 분석 전체를 종합한 3문장 내외의 "
-    "final_summary를 작성하세요."
+    "final_summary를 작성하세요.\n\n"
+    "propagation과 final_summary는 근거 자료(영문 기사 등)가 영어로 되어 있어도 "
+    "반드시 한국어로만 작성하세요 - 영어 문장을 그대로 옮기거나 섞어 쓰지 말고 "
+    "내용을 한국어로 번역/요약해서 쓰세요."
 )
 
 
