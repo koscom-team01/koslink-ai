@@ -35,6 +35,11 @@ class Settings(BaseSettings):
 
     VECTOR_COLLECTION_NAME: str = "market_evidence"
 
+    # 검색 결과 리랭커 (셀프호스팅 cross-encoder). sentence-transformers/torch가
+    # 필요해서 requirements.txt에는 아직 안 넣었다 - 로컬 .venv에만 설치해서
+    # 개발 중 (배포 방식은 별도 결정 예정, docs/rag_architecture.md 8장 참고).
+    RERANKER_MODEL: str = "Dongjin-kr/ko-reranker"
+
     PORT: int = 8000
 
 
