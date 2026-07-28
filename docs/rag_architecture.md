@@ -17,12 +17,15 @@
 
 ```
 [백엔드] 1분마다 최신 뉴스 폴링
-    → 뉴스 원문을 백엔드 DB에 저장
-    → AI 서버 호출 (POST /api/v1/news/{news_id}/analyze)
+    → 뉴스 원문을 백엔드 DB(news 테이블, status='PENDING')에 저장
+    → AI 서버 호출 (POST /api/v1/news/analyze-pending) - news_id 없이 트리거만
 
 [AI 서버 = 온톨로지 + RAG]
+    → news.status='PENDING'인 뉴스를 직접 조회해 'ANALYZING'으로 선점 후 일괄 처리
+      (news_repository.claim_pending, FOR UPDATE SKIP LOCKED로 중복 처리 방지)
     → 뉴스 요약, 주요 기업, 연관/파생 기업, 판단 근거(파급경로+과거 이벤트) 구성
-    → 이 응답을 AI 서버가 직접 DB에 저장 (동기 반환뿐 아니라 저장까지 AI 서버 책임)
+    → 이 응답을 AI 서버가 직접 DB에 저장하고 news.status를 DONE/FAILED로 갱신
+      (한 건 실패해도 나머지 뉴스는 계속 처리)
     → 저장 완료 후, 같은 뉴스를 온톨로지·RAG가 각각 사후 학습/임베딩
       (다음 뉴스 분석 때 "과거 이벤트" 근거로 쓰이도록 코퍼스에 편입)
 
@@ -143,61 +146,92 @@ DART 원문이 필요할 때 새로 구현하지 말고 이걸 재사용할 것.
 
 ---
 
-## 7. API 처리 흐름 (`POST /api/v1/news/{news_id}/analyze`)
+## 7. API 처리 흐름 (`POST /api/v1/news/analyze-pending`)
 
-라우터(`api/routers/query.py`)는 입출력만 담당하고, 실제 오케스트레이션은 `services/retrieval_service.py`, LLM 종합은 `core/chains/qa_chain.py`가 맡습니다.
+라우터(`api/routers/news.py`)는 입출력만 담당하고, 실제 오케스트레이션은 `services/retrieval_service.py`, LLM 종합은 `core/chains/qa_chain.py`가 맡습니다. 요청은 `limit` 쿼리 파라미터만 받고 news_id는 받지 않습니다 - 어떤 뉴스를 처리할지는 AI 서버가 직접 정합니다.
 
 ```
-[1] 뉴스 조회
-    news_repository.get_by_id(news_id)
-    → title, body, published_at, url 확보. 없으면 404.
+[0] 미응답 뉴스 선점
+    news_repository.claim_pending(limit)
+    → news.status='PENDING'인 뉴스를 'ANALYZING'으로 선점하며 최대 limit건 반환.
+      선점된 각 뉴스마다 아래 [1]~[5]을 순서대로 실행하고, 한 건이 실패해도
+      로그만 남기고 다음 뉴스로 넘어감(news.status='FAILED' + ai_responses에
+      error_message 기록).
+
+[1] LLM 추출 (Claude)
+    qa_chain.extract_key_companies(news, companies)
+    → news_summary(3줄 배열) + origin_stocks(companies 유니버스 51개 안에서
+      뉴스의 핵심 기업 딱 1개만 추출, status(up/down)+reason까지 LLM이 채움).
+      origin_stocks가 비면(유니버스 밖 뉴스) 여기서 바로 종료 - [2]~[5]를
+      건너뛰고 news.status만 'DONE'으로 남기며 ai_responses 행은 만들지 않음
+      (retrieval_service._analyze가 None 반환 → analyze_pending이 save 생략).
 
 [2] 온톨로지 조회 (Hard Fact)
-    ontology_client.find_related_companies(...)
-    → Neo4j에서 관련 기업/공급망 관계 리스트. 실패 시 빈 리스트로 폴백.
+    origin_stocks의 ticker마다 ontology_client.find_related_companies(ticker) 호출
+    → Neo4j에서 2-hop 이내 OntologyExploreResult(related_stocks + graph)를 반환.
+      related_stocks: [{ticker, name, relation_label, relation_path}], graph:
+      {originId, nodes: [{id, name, ticker, marketType, capSize}], edges: [{id,
+      source, target, relation}]}. origin_stocks가 여럿이면 (ticker, name)/node id
+      기준으로 결과를 합침. Neo4j 조회 실패 시 빈 값으로 폴백.
 
-[3] 벡터 검색 (RAG 근거)
-    vector_repository.similarity_search(
-        query=news.body,
-        tickers=[c.ticker for c in related],
-        k=5,
-    )
-    → 기업별 관련 공시/리포트 청크 top-k
+[3] RAG 근거 검색
+    derived 후보 기업마다:
+      vector_repository.find_mentions(ticker, origin_stock명) → 키워드 직접 근거
+      vector_repository.similarity_search(ticker, news_summary) → 의미 유사도 근거
+    → 두 근거를 합쳐 기업별 관련 공시/과거뉴스 청크 목록 구성(LLM이 propagation을
+      쓸 때 내부 근거로만 씀 - 응답에는 노출하지 않음)
 
-[4] 컨텍스트 조립
-    온톨로지 팩트 + 벡터 청크를 기업별로 그룹핑한 문자열로 정리
+[4] LLM 종합 (Claude)
+    qa_chain.synthesize_related_stocks(news, origin_stocks, derived_candidates, evidence)
+    → 후보별 status(up/down)/propagation만 LLM이 채움 - ticker/name/relation_label/
+      relation_path는 온톨로지 하드 팩트를 그대로 씀. 온톨로지 후보가 하나도 없어도
+      final_summary는 항상 필요하므로 호출을 생략하지 않고 매번 실행.
 
-[5] LLM 종합 (Claude)
-    qa_chain.invoke({graph_facts, vector_context, news_body})
-    → JSON 강제 파싱: news_summary + relevant_stocks[]
-
-[6] 응답 조립
-    LLM 결과에 [3]에서 실제 검색된 청크의 url/title/published_date를
-    evidence_sources로 매칭해 붙임 (근거 없으면 "관련 근거 자료 없음" 폴백)
+[5] 응답 조립
+    related_stocks는 [4] 결과(status/propagation)에 [2]의 derived_candidates
+    (ticker/name/relation_label/relation_path)를 합쳐서 만듦(관계 정보는 LLM이
+    합성하는 값이 아니라 하드 팩트라 신뢰하지 않음). source는 news 테이블 메타
+    정보를 그대로 옮겨 담고, graph는 온톨로지가 구성해 넘겨준 노드/엣지를 그대로
+    패싱(RAG는 조립하지 않음 - 온톨로지 연동 전까지는 빈 구조).
 ```
 
 ### 응답 스키마
 
-뉴스에 직접 언급된 **주요 기업**과, 온톨로지+RAG로 찾아낸 **파생/연관 기업**을 분리합니다. 판단 근거(파급경로+과거 이벤트)는 파생 기업 쪽에 붙습니다.
+뉴스가 실제로 다루는 **메인 기업**(origin_stocks)과, 온톨로지+RAG로 찾아낸 **연관 기업**(related_stocks)을 분리합니다. 파급 경로 서술(propagation)은 연관 기업 쪽에 붙습니다.
+
+`origin_stocks`는 배열이지만 최대 1개까지만 채워집니다 - 뉴스의 핵심 기업 1곳만 추출하도록 LLM 프롬프트로 제한하고, 응답 구조(FE와의 배열 계약)는 그대로 유지하기 위해 배열 형태를 씁니다. 비어 있으면(유니버스 밖 뉴스) `ai_responses`에 해당 news_id 행 자체가 없습니다.
 
 ```json
 {
-  "news_summary": "string",
-  "key_companies": [{ "ticker": "string", "name": "string" }],
-  "derived_companies": [
+  "news_summary": ["string", "string", "string"],
+  "source": { "press": "string", "published_at": "string", "url": "string" },
+  "origin_stocks": [
     {
       "ticker": "string",
       "name": "string",
-      "derived_from": "string (key_companies 중 파생 출발점이 된 ticker)",
-      "supply_relation": "string",
-      "market_sentiment": "긍정적|중립적|부정적",
-      "prediction": "상승세|보합|하락세",
-      "rationale": "string",
-      "evidence_sources": [
-        { "source_type": "disclosure|report|news", "title": "...", "url": "...", "published_date": "..." }
-      ]
+      "status": "up|down",
+      "reason": "string (왜 이 기업이 뉴스의 메인 기업인지)"
     }
-  ]
+  ],
+  "related_stocks": [
+    {
+      "ticker": "string",
+      "name": "string",
+      "status": "up|down",
+      "relation_label": "string (온톨로지 하드 팩트 - 그래프 뷰 엣지 라벨용, 예: 공급계약, 지분투자, 계열/관계사, 기술라이선싱, 경쟁사, 인수합병, 기타관계)",
+      "relation_path": "string (온톨로지 하드 팩트 - 예: 'SK하이닉스 → 한미반도체')",
+      "propagation": "string (파급 경로 서술, 기업명은 *기업명*으로 강조)"
+    }
+  ],
+  "final_summary": "string (응답 전체를 종합한 3문장 내외 요약)",
+  "graph": {
+    "newsId": "string",
+    "originId": "string",
+    "nodes": [
+      { "id": "string", "name": "string", "ticker": "string", "marketType": "string", "capSize": "string" }
+    ],
+    "edges": [{ "id": "string", "source": "string", "target": "string", "relation": "string" }]
+  }
 }
 ```
 
@@ -234,7 +268,7 @@ DART 원문이 필요할 때 새로 구현하지 말고 이걸 재사용할 것.
 - `companies` — 대상 기업 목록 (ticker, corp_code, name, role_code/role_name, size_tier). corp_code는 DART Open API 조회 키(8자리 고유번호, ticker와 다름)라 시드 데이터에 반드시 포함해야 합니다. role_code(예: `R_CHIP`, `R_IP`)는 온톨로지 파트의 분류 체계와 같은 시드 소스를 공유합니다.
 - `disclosures` — 사전 학습용 DART 공시 원문
 - `news_corpus` / `news` — 사전 학습용 과거 뉴스 원문 / 실시간 폴링 뉴스. 둘 다 데이터는 백엔드 쪽에서 구성해서 제공합니다.
-- `ai_responses` — AI 서버가 직접 저장하는 뉴스별 분석 응답 (news_summary, relevant_stocks 등)
+- `ai_responses` — AI 서버가 직접 저장하는 뉴스별 분석 응답 (news_summary, source, origin_stocks, related_stocks, final_summary, graph)
 - `rag_ingestion_log` — 임베딩 처리 로그. 사전 적재(공시/과거 뉴스)와 사후 임베딩(실시간 뉴스)에 공통으로 사용해 재적재 시 중복 벡터를 막습니다.
 - `langchain_pg_embedding` (`langchain_postgres.PGVector`가 자동 생성) — 실제 벡터 저장소. `document`는 오직 청크 텍스트만 반영하며, 검색 시 `ticker`/`source_type` 등 metadata로 먼저 필터링한 뒤 벡터 거리(`<=>`)로 top-k를 뽑습니다.
 
