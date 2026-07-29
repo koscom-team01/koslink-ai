@@ -169,25 +169,7 @@ async def find_related_companies(ticker: str) -> OntologyExploreResult:
         for r in edge_records
     ]
 
-    graph = OntologyGraph(
-        originId=origin_id,
-        nodes=[
-            GraphNode(
-                id=node["id"],
-                name=node["name"],
-                ticker=node.get("ticker") or "",
-                marketType=node.get("marketType") or "",
-                capSize=node.get("capSize") or "",
-            )
-            for node in node_by_id.values()
-        ],
-        edges=[
-            GraphEdge(id=f"e{i}", source=e["source_id"], target=e["target_id"], relation=e["label"])
-            for i, e in enumerate(edges, start=1)
-        ],
-    )
-
-    # related_stocks: graph.edges를 재사용해 기준 종목부터의 경로(1-hop/2-hop)를
+    # related_stocks: 위 edges를 재사용해 기준 종목부터의 경로(1-hop/2-hop)를
     # 조립한다 - 추가 Neo4j 왕복 없음. 노드별 인접 엣지 lookup을 양쪽 endpoint
     # 기준으로 구성한다.
     adjacency: dict[str, list[dict]] = {}
@@ -199,6 +181,11 @@ async def find_related_companies(ticker: str) -> OntologyExploreResult:
         return edge["target_id"] if edge["source_id"] == node_id else edge["source_id"]
 
     related_stocks: list[RelatedStock] = []
+    # related_stocks 각 항목이 참조하는 노드 id를 (endpoint_id, intermediate_id)로
+    # 병렬 추적한다 - _MAX_RELATED_CANDIDATES로 자른 뒤 graph도 그 후보들과
+    # 일치하게 필터링하기 위함 (2-hop 항목은 중간 노드도 있어야 시각화 경로가
+    # 안 끊긴다).
+    related_node_ids: list[tuple[str, str | None]] = []
     hop1_ids: set[str] = set()
 
     for edge in adjacency.get(origin_id, []):
@@ -213,6 +200,7 @@ async def find_related_companies(ticker: str) -> OntologyExploreResult:
                 relation_path=f"{origin['name']} → {other['name']}",
             )
         )
+        related_node_ids.append((other_id, None))
 
     for r_id in hop1_ids:
         r_node = node_by_id[r_id]
@@ -231,5 +219,37 @@ async def find_related_companies(ticker: str) -> OntologyExploreResult:
                     relation_path=f"{origin['name']} → {r_node['name']} → {y_node['name']}",
                 )
             )
+            related_node_ids.append((y_id, r_id))
 
-    return OntologyExploreResult(related_stocks=related_stocks[:_MAX_RELATED_CANDIDATES], graph=graph)
+    related_stocks = related_stocks[:_MAX_RELATED_CANDIDATES]
+    related_node_ids = related_node_ids[:_MAX_RELATED_CANDIDATES]
+
+    # graph도 related_stocks와 같은 후보로 맞춘다 - 카드에 없는 노드가 시각화에만
+    # 남지 않도록, origin + 잘라낸 항목들의 endpoint/중간 노드로만 구성한다.
+    included_ids = {origin_id}
+    for endpoint_id, intermediate_id in related_node_ids:
+        included_ids.add(endpoint_id)
+        if intermediate_id is not None:
+            included_ids.add(intermediate_id)
+
+    graph = OntologyGraph(
+        originId=origin_id,
+        nodes=[
+            GraphNode(
+                id=node["id"],
+                name=node["name"],
+                ticker=node.get("ticker") or "",
+                marketType=node.get("marketType") or "",
+                capSize=node.get("capSize") or "",
+            )
+            for node in node_by_id.values()
+            if node["id"] in included_ids
+        ],
+        edges=[
+            GraphEdge(id=f"e{i}", source=e["source_id"], target=e["target_id"], relation=e["label"])
+            for i, e in enumerate(edges, start=1)
+            if e["source_id"] in included_ids and e["target_id"] in included_ids
+        ],
+    )
+
+    return OntologyExploreResult(related_stocks=related_stocks, graph=graph)
