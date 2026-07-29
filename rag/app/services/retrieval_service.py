@@ -179,21 +179,28 @@ class RetrievalService:
         )
 
         candidates_by_ticker = {c.ticker: c for c in derived_candidates}
+        # LLM이 구조화 출력의 ticker 필드에 티커 코드 대신 회사명을 넣는 경우가
+        # 실제로 있었다(news_id=313 재현 - 로그상 related_stocks는 정상 생성됐는데
+        # ticker="텔레칩스"처럼 이름이 들어가 티커 매칭에 실패해 전부 조용히
+        # 걸러짐). ticker 매칭이 실패하면 이름으로도 한 번 더 시도해 이런 필드
+        # 혼동에도 후보가 누락되지 않게 한다.
+        candidates_by_name = {c.name: c for c in derived_candidates}
         evidence_by_ticker = group_evidence_by_ticker(vector_context)
 
         # 프롬프트로 "후보 목록에 없는 기업을 새로 만들어내지 마세요"라고 지시해도
         # LLM이 origin_stocks 자신 등 후보 밖 기업을 끼워 넣는 경우가 실제로
         # 있어서, 온톨로지 후보에 없는 항목은 걸러낸다 (하드 팩트가 없는
         # related_stocks는 relation_label/relation_path를 채울 수 없어 신뢰 불가).
-        # name이 아니라 ticker로만 매칭한다 - 후보 목록엔 "이름(티커)"로 노출되는데
-        # 티커는 자연어 변형 여지가 없어 LLM이 그대로 echo하지만, 이름은 띄어쓰기·
-        # "㈜" 유무 등으로 미세하게 달라질 수 있어 (ticker, name) 조합으로 매칭하면
-        # 실제로는 유효한 응답을 이름 표기 차이만으로 조용히 떨어뜨리는 문제가 있었다.
-        # 매칭된 뒤엔 name도 candidate(온톨로지 원본) 쪽을 써서 표기를 통일한다.
+        # 기본은 ticker로 매칭한다 - (ticker, name) 조합 매칭은 예전에 시도했다가
+        # 이름 표기 차이(띄어쓰기·"㈜" 유무)만으로 유효한 응답이 조용히 떨어지는
+        # 문제가 있어 뺐다. 다만 ticker 매칭이 실패하면 name으로 한 번 더 시도한다
+        # - LLM이 구조화 출력의 ticker 필드에 티커 코드 대신 회사명을 그대로 넣는
+        # 경우가 실제로 있었다(news_id=313 재현 - ticker="텔레칩스"). 매칭된 뒤엔
+        # ticker/name 둘 다 candidate(온톨로지 원본) 쪽을 써서 표기를 통일한다.
         related_stocks: list[RelatedStock] = []
         evidence_debug: list[EvidenceDebugEntry] = []
         for r in synthesis.related_stocks:
-            candidate = candidates_by_ticker.get(r.ticker)
+            candidate = candidates_by_ticker.get(r.ticker) or candidates_by_name.get(r.ticker) or candidates_by_name.get(r.name)
             if candidate is None:
                 logger.warning(
                     "synthesize_related_stocks가 후보 목록에 없는 ticker를 반환 - "
